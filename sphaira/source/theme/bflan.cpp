@@ -351,7 +351,7 @@ std::unique_ptr<Bflan> BflanDeserializer::FromJson(std::string jsn) {
         p->Unk_StartOfFile = pat1["Unk_StartOfFile"].get<u16>();
         p->Unk_EndOfFile = pat1["Unk_EndOfFile"].get<u16>();
         p->Groups = pat1["Groups"].get<std::vector<std::string>>();
-        p->Unk_EndOfHeader = Base64::Decode(pat1["Unk_EndOfHeader"]);
+        p->Unk_EndOfHeader = Base64::Decode(pat1["Unk_EndOfHeader"].get<std::string>());
         res->Sections.push_back((BflanSection*)p);
     }
 
@@ -364,13 +364,13 @@ std::unique_ptr<Bflan> BflanDeserializer::FromJson(std::string jsn) {
 
         for (auto& Entry : pai1["Entries"]) {
             PaiEntry e;
-            e.Name = Entry["Name"];
+            e.Name = Entry["Name"].get<std::string>();
             e.Target = (PaiEntry::AnimationTarget)Entry["Target"].get<u8>();
-            e.UnkwnownData = Base64::Decode(Entry["UnkwnownData"]);
+            e.UnkwnownData = Base64::Decode(Entry["UnkwnownData"].get<std::string>());
             for (auto& Tag : Entry["Tags"]) {
                 PaiTag t;
                 t.Unknown = Tag["Unknown"].get<u32>();
-                t.TagType = Tag["TagType"];
+                t.TagType = Tag["TagType"].get<std::string>();
                 for (auto& TagEntry : Tag["Entries"]) {
                     PaiTagEntry pe = {};
                     if (!TagEntry["Index"].is_null()) pe.Index = TagEntry["Index"].get<u8>();
