@@ -18,6 +18,7 @@
 
 #include <minIni.h>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 
 namespace sphaira::ui::menu::cloud {
@@ -386,6 +387,64 @@ bool GuangyaOfflineDownload(const std::string& url) {
     return msg.empty() || msg == "success";
 }
 
+// 从百度 cookie 里提取 BDSTOKEN。
+std::string ExtractBdstoken(const std::string& cookie) {
+    std::string upper = cookie;
+    for (auto& c : upper) {
+        c = (char)std::toupper((unsigned char)c);
+    }
+    const size_t pos = upper.find("BDSTOKEN=");
+    if (pos == std::string::npos) {
+        return {};
+    }
+    const size_t start = pos + 9; // strlen("BDSTOKEN=")
+    const size_t end = cookie.find(';', start);
+    return cookie.substr(start, end == std::string::npos ? std::string::npos : end - start);
+}
+
+// 百度网盘离线下载（转存磁力/ed2k/http）。
+// 注意：百度离线下载用的是网页 API（bdstoken），不是 OAuth 的 access_token。
+bool BaiduOfflineDownload(const std::string& url) {
+    std::string bdstoken = ReadIniKey("/config/sphaira/mount/baidu.ini", "bdstoken");
+    if (bdstoken.empty()) {
+        bdstoken = ExtractBdstoken(ReadIniKey("/config/sphaira/mount/baidu.ini", "cookie"));
+    }
+    if (bdstoken.empty()) {
+        return false;
+    }
+
+    const std::string body = "method=add_task&app_id=250528&source_url=" + UrlEncode(url) +
+        "&save_path=" + UrlEncode("/") + "&bdstoken=" + UrlEncode(bdstoken);
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return false;
+    }
+    std::string resp;
+    curl_slist* h = curl_slist_append(nullptr, "Content-Type: application/x-www-form-urlencoded");
+
+    curl_easy_setopt(curl, CURLOPT_URL, "https://pan.baidu.com/rest/2.0/services/cloud_dl");
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+
+    devcloud::Json j(resp);
+    if (!j) {
+        return false;
+    }
+    return devcloud::js_int(j.get(), "errno", -1) == 0;
+}
+
 } // namespace
 
 Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
@@ -566,24 +625,24 @@ void Menu::OfflineDownload() {
 
     const auto& p = m_entries[m_index];
 
-    // 目前仅光鸭支持磁力/ed2k 离线下载（转存）。
-    if (std::strcmp(p.section, "GUANGYA")) {
-        App::Notify("当前网盘暂不支持离线下载（已支持：光鸭云盘）");
+    if (std::strcmp(p.section, "GUANGYA") && std::strcmp(p.section, "BAIDU")) {
+        App::Notify("当前网盘暂不支持离线下载（已支持：光鸭、百度）");
         return;
     }
 
     std::string url;
-    if (R_FAILED(swkbd::ShowText(url, "离线下载", "粘贴 magnet / ed2k 链接", nullptr, -1, 4096))) {
+    if (R_FAILED(swkbd::ShowText(url, "离线下载", "粘贴 magnet / ed2k / http 链接", nullptr, -1, 4096))) {
         return;
     }
     if (url.empty()) {
         return;
     }
 
-    if (GuangyaOfflineDownload(url)) {
-        App::Notify("已提交离线下载任务，请到光鸭网盘查看");
+    const bool ok = !std::strcmp(p.section, "GUANGYA") ? GuangyaOfflineDownload(url) : BaiduOfflineDownload(url);
+    if (ok) {
+        App::Notify("已提交离线下载任务，请到网盘查看");
     } else {
-        App::Notify("离线下载提交失败，请检查是否已登录光鸭");
+        App::Notify("离线下载提交失败，请检查登录凭证");
     }
 }
 
