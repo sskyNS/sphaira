@@ -1,0 +1,184 @@
+#pragma once
+
+// 移植自 SwitchThemeInjector 的 Layouts/Bflan.hpp + Layouts/Base64.hpp。
+// BFLAN 动画文件解析/序列化 + 从 JSON 反序列化。
+
+#include <vector>
+#include <string>
+#include <type_traits>
+#include <memory>
+#include "theme/buffer.hpp"
+
+namespace sphaira::theme {
+
+namespace Base64 {
+    static const std::string b = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    inline std::string Encode(const std::vector<u8>& in) {
+        std::string out;
+        int val = 0, valb = -6;
+        for (u8 c : in) {
+            val = (val << 8) + c;
+            valb += 8;
+            while (valb >= 0) {
+                out.push_back(b[(val >> valb) & 0x3F]);
+                valb -= 6;
+            }
+        }
+        if (valb > -6) out.push_back(b[((val << 8) >> (valb + 8)) & 0x3F]);
+        while (out.size() % 4) out.push_back('=');
+        return out;
+    }
+
+    inline std::vector<u8> Decode(const std::string& in) {
+        std::vector<u8> out;
+        std::vector<int> T(256, -1);
+        for (int i = 0; i < 64; i++) T[b[i]] = i;
+
+        int val = 0, valb = -8;
+        for (u8 c : in) {
+            if (T[c] == -1) break;
+            val = (val << 6) + T[c];
+            valb += 6;
+            if (valb >= 0) {
+                out.push_back(u8((val >> valb) & 0xFF));
+                valb -= 8;
+            }
+        }
+        return out;
+    }
+}
+
+class BflanSection {
+public:
+    std::string TypeName;
+    std::vector<u8> Data;
+
+    BflanSection(const std::string& _name);
+    BflanSection(const std::string& _name, const std::vector<u8>& data);
+
+    virtual void BuildData(Endianness byteOrder);
+    virtual void Write(Buffer& buf);
+
+    virtual ~BflanSection() {}
+};
+
+class Pat1Section : public BflanSection {
+private:
+    const int groupNameLen = 0x24;
+public:
+    u16 AnimationOrder;
+    std::string Name;
+    u8 ChildBinding;
+    std::vector<std::string> Groups;
+
+    u16 Unk_StartOfFile;
+    u16 Unk_EndOfFile;
+    std::vector<u8> Unk_EndOfHeader;
+
+    Pat1Section();
+    Pat1Section(const std::vector<u8>& data, Endianness bo);
+    ~Pat1Section() {}
+
+    void ParseData(Endianness bo);
+    void BuildData(Endianness byteOrder) override;
+};
+
+class KeyFrame {
+public:
+    float Frame, Value, Blend;
+    KeyFrame(Buffer& buf, u16 DataType);
+    KeyFrame();
+};
+
+class PaiTagEntry {
+public:
+    u8 Index;
+    u8 AnimationTarget;
+    u16 DataType;
+    std::vector<KeyFrame> KeyFrames;
+
+    u32 FLEUUnknownInt;
+    std::string FLEUEntryName;
+
+    PaiTagEntry();
+    PaiTagEntry(Buffer& buf, std::string TagName);
+    void Write(Buffer& buf, std::string TagName);
+};
+
+class PaiTag {
+public:
+    u32 Unknown;
+    std::string TagType;
+    std::vector<PaiTagEntry> Entries;
+
+    PaiTag(Buffer& buf, u8 TargetType);
+    PaiTag();
+    void Write(Buffer& buf, u8 TargetType);
+};
+
+class PaiEntry {
+public:
+    enum class AnimationTarget : u8 {
+        Pane = 0,
+        Material = 1,
+        UserData = 2,
+        MAX = 3
+    };
+
+    std::string Name;
+    AnimationTarget Target;
+    std::vector<PaiTag> Tags;
+    std::vector<u8> UnkwnownData;
+
+    PaiEntry();
+    PaiEntry(Buffer& buf);
+    void Write(Buffer& buf);
+};
+
+class Pai1Section : public BflanSection {
+public:
+    u16 FrameSize;
+    u8 Flags;
+    std::vector<std::string> Textures;
+    std::vector<PaiEntry> Entries;
+
+    Pai1Section();
+    Pai1Section(const std::vector<u8>& data, Endianness bo);
+    ~Pai1Section() {}
+
+    void ParseData(Endianness bo);
+    void BuildData(Endianness bo) override;
+};
+
+class Bflan {
+public:
+    Endianness byteOrder;
+    u32 Version;
+
+    std::vector<BflanSection*> Sections;
+    ~Bflan();
+
+    Bflan();
+    Bflan(const std::vector<u8>& data);
+    std::vector<u8> WriteFile();
+
+    template <typename T>
+    const T* FindSectionByType() const requires std::is_base_of_v<BflanSection, T> {
+        for (BflanSection* section : Sections) {
+            if (auto casted = dynamic_cast<T*>(section))
+                return casted;
+        }
+        return nullptr;
+    }
+
+private:
+    void ParseFile(Buffer& buf);
+};
+
+class BflanDeserializer {
+public:
+    static std::unique_ptr<Bflan> FromJson(std::string json);
+};
+
+} // namespace sphaira::theme

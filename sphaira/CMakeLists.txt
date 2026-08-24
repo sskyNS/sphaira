@@ -83,6 +83,7 @@ add_executable(sphaira
     source/ui/menus/game_menu.cpp
     source/ui/menus/game_version_menu.cpp
     source/ui/menus/cloud_menu.cpp
+    source/ui/menus/theme_install_menu.cpp
     source/ui/menus/game_meta_menu.cpp
     source/ui/menus/game_nca_menu.cpp
     source/ui/menus/grid_menu_base.cpp
@@ -148,6 +149,17 @@ add_executable(sphaira
     source/theme/buffer.cpp
     source/theme/yaz0.cpp
     source/theme/sarc.cpp
+    source/theme/common.cpp
+    source/theme/bntx.cpp
+    source/theme/bflyt.cpp
+    source/theme/bflan.cpp
+    source/theme/nxtheme.cpp
+    source/theme/layouts.cpp
+    source/theme/new_firm_fixes.cpp
+    source/theme/patcher.cpp
+    source/theme/templates.cpp
+    source/theme/install.cpp
+    source/theme/dump.cpp
 
     source/usb/base.cpp
     source/usb/usbds.cpp

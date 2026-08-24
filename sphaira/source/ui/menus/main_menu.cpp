@@ -20,6 +20,7 @@
 #include "ui/menus/game_menu.hpp"
 #include "ui/menus/game_version_menu.hpp"
 #include "ui/menus/cloud_menu.hpp"
+#include "ui/menus/theme_install_menu.hpp"
 #include "ui/menus/save_menu.hpp"
 #include "ui/menus/appstore.hpp"
 
@@ -318,6 +319,11 @@ const MiscMenuEntry MISC_MENU_ENTRIES[] = {
     { .name = "Cloud", .title = "Cloud Drives", .func = MiscMenuFuncGenerator<ui::menu::cloud::Menu>, .flag = MiscMenuFlag_Shortcut, .info =
         "Manage cloud drives (Baidu, Google Drive, Quark, Aliyun, Guangya, Fengling). "
         "Log in with a token/cookie and browse files via the file browser." },
+
+    { .name = "Themes", .title = "Theme Install", .func = MiscMenuFuncGenerator<ui::menu::theme_install::Menu>, .flag = MiscMenuFlag_Shortcut, .info =
+        "Install .nxtheme files from /themes/sphaira.\n\n"
+        "Requires a dumped base theme at /themes/sphaira/dump/{TitleId}/lyt/*.szs. "
+        "Patched themes are written to /atmosphere/contents/{TitleId}/romfs/lyt/*.szs." },
 
     { .name = "FileBrowser", .title = "FileBrowser", .func = MiscMenuFuncGenerator<ui::menu::filebrowser::Menu>, .flag = MiscMenuFlag_Shortcut, .info =
         "Browse files on you SD Card. "
