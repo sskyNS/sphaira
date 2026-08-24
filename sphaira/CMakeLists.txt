@@ -145,6 +145,10 @@ add_executable(sphaira
     source/utils/qr.cpp
     source/utils/qrcodegen.c
 
+    source/theme/buffer.cpp
+    source/theme/yaz0.cpp
+    source/theme/sarc.cpp
+
     source/usb/base.cpp
     source/usb/usbds.cpp
     source/usb/usbhs.cpp

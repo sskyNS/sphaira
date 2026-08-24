@@ -1,0 +1,137 @@
+#pragma once
+
+// 移植自 SwitchThemeInjector 的 BinaryReadWrite/Buffer。
+// 通用二进制读写缓冲，供 SARC/Yaz0/BNTX/BFLYT 使用。
+
+#include <vector>
+#include <span>
+#include <string>
+#include <cstdint>
+#include <cstddef>
+
+namespace sphaira::theme {
+
+enum class Endianness : unsigned char {
+    LittleEndian,
+    BigEndian
+};
+
+class Buffer {
+public:
+    enum class BinaryString : unsigned char {
+        NoPrefixOrTermination,
+        NullTerminated,
+        WordLengthPrefix
+    };
+
+    Endianness ByteOrder = Endianness::LittleEndian;
+    size_t Position = 0;
+
+    Buffer();
+    Buffer(const std::vector<unsigned char>&);   // 拷贝数据
+    Buffer(std::span<const unsigned char>);      // 拷贝数据
+
+    void setBuffer(std::vector<unsigned char>&);
+    const std::vector<unsigned char>& getBuffer() const;
+    void clear();
+
+    std::string byteStr(bool LE = true) const;
+
+    size_t Length();
+
+    /************************** 写入 ***************************/
+
+    template <class T> inline void writeBytes(const T& val, bool LE = true);
+
+    void WriteAlign(int val);
+    void WriteFixedLengthString(const std::string&, unsigned int);
+    void Write(const std::string&, BinaryString s = BinaryString::NoPrefixOrTermination);
+    void Write(char);
+    void Write(unsigned char);
+    void Write(short);
+    void Write(unsigned short);
+    void Write(int);
+    void Write(unsigned int);
+    void Write(long long);
+    void Write(uint64_t);
+    void Write(float);
+    void Write(double);
+    void Write(const std::vector<unsigned char>&);
+    void Write(const std::vector<unsigned char>& vec, int start, int lenght);
+
+    void WriteU32Array(const std::vector<unsigned int>& arr);
+
+    void writeInt16_LE(short);
+    void writeInt16_BE(short);
+    void writeUInt16_LE(unsigned short);
+    void writeUInt16_BE(unsigned short);
+
+    void writeInt32_LE(int);
+    void writeInt32_BE(int);
+    void writeUInt32_LE(unsigned int);
+    void writeUInt32_BE(unsigned int);
+
+    void writeInt64_LE(long long);
+    void writeInt64_BE(long long);
+    void writeUInt64_LE(uint64_t);
+    void writeUInt64_BE(uint64_t);
+
+    void writeFloat_LE(float);
+    void writeFloat_BE(float);
+    void writeDouble_LE(double);
+    void writeDouble_BE(double);
+
+    /************************** 读取 ***************************/
+
+    template <class T> inline T readBytes(bool LE = true);
+
+    bool               readBool();
+    std::string        readStr_Fixed(size_t len);
+    std::string        readStr(size_t len);
+    std::string        readStr_NullTerm(size_t maxLen = SIZE_MAX);
+    std::string        readStr_U16Prefix();
+
+    char               readInt8();
+    unsigned char      readUInt8();
+
+    short              readInt16();
+    short              readInt16_LE();
+    short              readInt16_BE();
+    unsigned short     readUInt16();
+    unsigned short     readUInt16_LE();
+    unsigned short     readUInt16_BE();
+
+    int                readInt32();
+    int                readInt32_LE();
+    int                readInt32_BE();
+    unsigned int       readUInt32();
+    unsigned int       readUInt32_LE();
+    unsigned int       readUInt32_BE();
+
+    long long          readInt64();
+    long long          readInt64_LE();
+    long long          readInt64_BE();
+    unsigned long long readUInt64();
+    unsigned long long readUInt64_LE();
+    unsigned long long readUInt64_BE();
+
+    float              readFloat();
+    float              readFloat_LE();
+    float              readFloat_BE();
+    double             readDouble();
+    double             readDouble_LE();
+    double             readDouble_BE();
+
+    std::vector<unsigned int> ReadU32Array(int count);
+    std::vector<int> ReadS32Array(int count);
+
+    std::vector<unsigned char> readBytes(unsigned int count);
+
+    ~Buffer();
+
+private:
+    std::vector<unsigned char> buffer;
+    void putByte(unsigned char b);
+};
+
+} // namespace sphaira::theme
