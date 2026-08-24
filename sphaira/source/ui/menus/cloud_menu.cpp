@@ -7,6 +7,7 @@
 
 #include "utils/devoptab_common.hpp"
 #include "utils/cloud_disk.hpp"
+#include "utils/qr.hpp"
 
 #include "ui/menus/cloud_menu.hpp"
 #include "ui/menus/filebrowser.hpp"
@@ -86,7 +87,20 @@ Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
     grid::Menu::OnLayoutChange(m_list, grid::LayoutType_List);
 }
 
-Menu::~Menu() = default;
+Menu::~Menu() {
+    if (m_qr_image) {
+        nvgDeleteImage(App::GetVg(), m_qr_image);
+    }
+}
+
+void Menu::ClearQr() {
+    if (m_qr_image) {
+        nvgDeleteImage(App::GetVg(), m_qr_image);
+        m_qr_image = 0;
+    }
+    m_qr_rgba.clear();
+    m_qr_size = 0;
+}
 
 void Menu::RefreshStatus() {
     m_authed.clear();
@@ -169,9 +183,14 @@ void Menu::StartDeviceCodeLogin() {
     m_login_active = true;
     m_login_next_poll_ms = NowMs() + 2000;
 
-    // 把登录链接显示在副标题（滚动文本），并提示用户在手机上打开。
-    this->SetSubHeading(m_login_url);
-    App::Notify("请在手机浏览器打开上方链接完成登录");
+    // 生成二维码；失败则退回显示文本链接。
+    ClearQr();
+    if (qr::Generate(m_login_url, m_qr_rgba, m_qr_size, 6)) {
+        this->SetSubHeading("请用手机扫描二维码完成登录");
+    } else {
+        this->SetSubHeading(m_login_url);
+    }
+    App::Notify("请用手机扫码登录");
 }
 
 void Menu::PollDeviceCodeLogin() {
@@ -209,6 +228,7 @@ void Menu::PollDeviceCodeLogin() {
     ini_puts("GUANGYA", "refresh_token", refresh.c_str(), "/config/sphaira/mount/guangya.ini");
 
     m_login_active = false;
+    ClearQr();
     this->SetSubHeading("");
     RefreshStatus();
     App::Notify("光鸭登录成功，重启后生效");
@@ -228,6 +248,27 @@ void Menu::Update(Controller* controller, TouchInfo* touch) {
 
 void Menu::Draw(NVGcontext* vg, Theme* theme) {
     MenuBase::Draw(vg, theme);
+
+    if (m_login_active) {
+        // 懒加载创建 nanovg 图像。
+        if (!m_qr_image && !m_qr_rgba.empty()) {
+            m_qr_image = nvgCreateImageRGBA(vg, m_qr_size, m_qr_size, NVG_IMAGE_NEAREST, m_qr_rgba.data());
+        }
+
+        if (m_qr_image) {
+            const float s1 = GetW() - 240.f;
+            const float s2 = GetH() - 240.f;
+            const float size = s1 < s2 ? s1 : s2;
+            const float x = GetX() + (GetW() - size) / 2.f;
+            const float y = GetY() + (GetH() - size) / 2.f + 20.f;
+            gfx::drawImage(vg, x, y, size, size, m_qr_image);
+        }
+
+        gfx::drawTextArgs(vg, GetX() + GetW() / 2.f, GetY() + GetH() - 70.f, 24.f,
+            NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE, theme->GetColour(ThemeEntryID_TEXT),
+            "请用手机扫描二维码登录，等待授权...");
+        return;
+    }
 
     m_list->Draw(vg, theme, m_entries.size(), [this](auto* vg, auto* theme, auto v, auto pos) {
         const auto& p = m_entries[pos];

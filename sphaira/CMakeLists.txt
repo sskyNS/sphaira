@@ -142,6 +142,8 @@ add_executable(sphaira
     source/utils/devoptab_game.cpp
     source/utils/devoptab_mounts.cpp
     source/utils/devoptab.cpp
+    source/utils/qr.cpp
+    source/utils/qrcodegen.c
 
     source/usb/base.cpp
     source/usb/usbds.cpp

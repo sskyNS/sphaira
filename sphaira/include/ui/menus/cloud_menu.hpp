@@ -4,6 +4,7 @@
 #include "ui/list.hpp"
 
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,7 @@ private:
     void StartDeviceCodeLogin();
     void PollDeviceCodeLogin();
     void RefreshStatus();
+    void ClearQr();
 
     std::vector<Provider> m_entries{};
     std::vector<bool> m_authed{};
@@ -41,6 +43,11 @@ private:
     u64 m_login_next_poll_ms{};
     std::string m_login_url{};
     std::string m_login_code{};
+
+    // 二维码显示状态
+    std::vector<std::uint8_t> m_qr_rgba{};
+    int m_qr_size{};
+    int m_qr_image{};
 };
 
 } // namespace sphaira::ui::menu::cloud
