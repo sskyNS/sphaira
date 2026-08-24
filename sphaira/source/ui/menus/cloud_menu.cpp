@@ -4,6 +4,7 @@
 #include "defines.hpp"
 #include "swkbd.hpp"
 #include "fs.hpp"
+#include "download.hpp"
 
 #include "utils/devoptab_common.hpp"
 #include "utils/cloud_disk.hpp"
@@ -63,6 +64,82 @@ std::string HttpPostJson(const std::string& url, const std::string& body) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+    return resp;
+}
+
+size_t WriteCb(char* p, size_t s, size_t n, void* u) {
+    auto* out = static_cast<std::string*>(u);
+    out->append(p, s * n);
+    return s * n;
+}
+
+std::string UrlEncode(const std::string& s) {
+    return sphaira::curl::EscapeString(s);
+}
+
+std::string Base64Decode(const std::string& encoded) {
+    static const std::string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    int val = 0, valb = -8;
+    for (unsigned char c : encoded) {
+        if (c == '=') {
+            break;
+        }
+        const size_t idx = chars.find(c);
+        if (idx == std::string::npos) {
+            continue;
+        }
+        val = (val << 6) + (int)idx;
+        valb += 6;
+        if (valb >= 0) {
+            out.push_back((char)((val >> valb) & 0xFF));
+            valb -= 8;
+        }
+    }
+    return out;
+}
+
+std::string HttpGetCookies(const std::string& url, const std::string& cookie_file) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return {};
+    }
+    std::string resp;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file.c_str());
+    curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    return resp;
+}
+
+std::string HttpPostFormCookies(const std::string& url, const std::string& form, const std::string& cookie_file) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return {};
+    }
+    std::string resp;
+    curl_slist* h = curl_slist_append(nullptr, "Content-Type: application/x-www-form-urlencoded");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, form.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)form.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file.c_str());
+    curl_easy_setopt(curl, CURLOPT_COOKIEJAR, cookie_file.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
     curl_easy_perform(curl);
     curl_slist_free_all(h);
     curl_easy_cleanup(curl);
@@ -158,25 +235,55 @@ void Menu::StartDeviceCodeLogin() {
         return;
     }
 
-    if (m_index >= m_entries.size() || std::strcmp(m_entries[m_index].section, "GUANGYA") != 0) {
+    if (m_index >= m_entries.size()) {
+        return;
+    }
+
+    const std::string sec = m_entries[m_index].section;
+
+    if (sec == "GUANGYA") {
+        const std::string body = "{\"client_id\":\"aMe-8VSlkrbQXpUR\",\"scope\":\"user\"}";
+        const auto resp = HttpPostJson("https://account.guangyapan.com/v1/auth/device/code", body);
+
+        devcloud::Json j(resp);
+        if (!j) {
+            App::Notify("生成登录码失败");
+            return;
+        }
+
+        m_login_code = devcloud::js_str(j.get(), "device_code", "");
+        m_login_url = devcloud::js_str(j.get(), "verification_uri_complete", "");
+
+        if (m_login_code.empty() || m_login_url.empty()) {
+            App::Notify("生成登录码失败");
+            return;
+        }
+        m_login_type = "guangya";
+    } else if (sec == "ALIYUN") {
+        fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
+        m_qr_cookie_file = "/config/sphaira/mount/aliyun_qr_cookie.txt";
+
+        // 1. 建立会话（拿 SESSIONID cookie）。
+        HttpGetCookies(
+            "https://auth.aliyundrive.com/v2/oauth/authorize?login_type=custom&response_type=code&redirect_uri=https%3A%2F%2Fwww.aliyundrive.com%2Fsign%2Fcallback&client_id=25dzX3vbYqktVxyX&state=%7B%22origin%22%3A%22file%3A%2F%2F%22%7D",
+            m_qr_cookie_file);
+
+        // 2. 生成二维码。
+        m_qr_data_raw = HttpGetCookies(
+            "https://passport.aliyundrive.com/newlogin/qrcode/generate.do?appName=aliyun_drive",
+            m_qr_cookie_file);
+
+        devcloud::Json gj(m_qr_data_raw);
+        auto* gdata = devcloud::js_get(devcloud::js_get(gj.get(), "content"), "data");
+        m_login_url = devcloud::js_str(gdata, "codeContent", "");
+
+        if (m_login_url.empty()) {
+            App::Notify("生成二维码失败");
+            return;
+        }
+        m_login_type = "aliyun";
+    } else {
         App::Notify("当前网盘暂不支持扫码登录，请用粘贴凭证");
-        return;
-    }
-
-    const std::string body = "{\"client_id\":\"aMe-8VSlkrbQXpUR\",\"scope\":\"user\"}";
-    const auto resp = HttpPostJson("https://account.guangyapan.com/v1/auth/device/code", body);
-
-    devcloud::Json j(resp);
-    if (!j) {
-        App::Notify("生成登录码失败");
-        return;
-    }
-
-    m_login_code = devcloud::js_str(j.get(), "device_code", "");
-    m_login_url = devcloud::js_str(j.get(), "verification_uri_complete", "");
-
-    if (m_login_code.empty() || m_login_url.empty()) {
-        App::Notify("生成登录码失败");
         return;
     }
 
@@ -203,6 +310,12 @@ void Menu::PollDeviceCodeLogin() {
     }
     m_login_next_poll_ms = NowMs() + 2000;
 
+    if (m_login_type == "aliyun") {
+        PollAliyunLogin();
+        return;
+    }
+
+    // 光鸭设备码轮询。
     const std::string body =
         "{\"client_id\":\"aMe-8VSlkrbQXpUR\","
         "\"grant_type\":\"urn:ietf:params:oauth:grant-type:device_code\","
@@ -218,7 +331,6 @@ void Menu::PollDeviceCodeLogin() {
     const std::string refresh = devcloud::js_str(j.get(), "refresh_token", "");
 
     if (access.empty()) {
-        // 尚未授权或授权中，继续轮询。
         return;
     }
 
@@ -232,6 +344,87 @@ void Menu::PollDeviceCodeLogin() {
     this->SetSubHeading("");
     RefreshStatus();
     App::Notify("光鸭登录成功，重启后生效");
+}
+
+void Menu::PollAliyunLogin() {
+    // 从 generate.do 的 content.data 构造 form 数据。
+    devcloud::Json gj(m_qr_data_raw);
+    auto* data = devcloud::js_get(devcloud::js_get(gj.get(), "content"), "data");
+
+    std::string form;
+    if (data && yyjson_is_obj(data)) {
+        yyjson_obj_iter iter;
+        yyjson_obj_iter_init(data, &iter);
+        yyjson_val* key;
+        while ((key = yyjson_obj_iter_next(&iter))) {
+            yyjson_val* val = yyjson_obj_iter_get_val(key);
+            const char* k = yyjson_get_str(key);
+            if (!k) {
+                continue;
+            }
+            std::string v;
+            if (yyjson_is_str(val)) {
+                v = yyjson_get_str(val);
+            } else if (yyjson_is_uint(val)) {
+                v = std::to_string(yyjson_get_uint(val));
+            } else if (yyjson_is_sint(val)) {
+                v = std::to_string(yyjson_get_sint(val));
+            } else if (yyjson_is_bool(val)) {
+                v = yyjson_get_bool(val) ? "true" : "false";
+            }
+            if (!form.empty()) {
+                form += "&";
+            }
+            form += std::string(k) + "=" + UrlEncode(v);
+        }
+    }
+
+    const auto resp = HttpPostFormCookies(
+        "https://passport.aliyundrive.com/newlogin/qrcode/query.do?appName=aliyun_drive",
+        form, m_qr_cookie_file);
+
+    devcloud::Json rj(resp);
+    auto* d = devcloud::js_get(devcloud::js_get(rj.get(), "content"), "data");
+    const std::string status = devcloud::js_str(d, "qrCodeStatus", "");
+    const std::string biz = devcloud::js_str(d, "bizExt", "");
+
+    if (status == "EXPIRED" || status == "CANCEL") {
+        m_login_active = false;
+        ClearQr();
+        this->SetSubHeading("");
+        App::Notify("登录码已过期，请重试");
+        return;
+    }
+
+    // CONFIRMED 时会带 bizExt（内含 refreshToken）。
+    std::string rt;
+    if (!biz.empty()) {
+        const std::string decoded = Base64Decode(biz);
+        const size_t pos = decoded.find("\"refreshToken\"");
+        if (pos != std::string::npos) {
+            const size_t colon = decoded.find(':', pos);
+            const size_t q1 = decoded.find('"', colon + 1);
+            const size_t q2 = decoded.find('"', q1 + 1);
+            if (colon != std::string::npos && q1 != std::string::npos && q2 != std::string::npos) {
+                rt = decoded.substr(q1 + 1, q2 - q1 - 1);
+            }
+        }
+    }
+
+    if (rt.empty()) {
+        // NEW / SCANED：继续轮询。
+        return;
+    }
+
+    fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
+    ini_puts("ALIYUN", "url", "https://example.com", "/config/sphaira/mount/aliyun.ini");
+    ini_puts("ALIYUN", "refresh_token", rt.c_str(), "/config/sphaira/mount/aliyun.ini");
+
+    m_login_active = false;
+    ClearQr();
+    this->SetSubHeading("");
+    RefreshStatus();
+    App::Notify("阿里云盘登录成功，重启后生效");
 }
 
 void Menu::Update(Controller* controller, TouchInfo* touch) {
