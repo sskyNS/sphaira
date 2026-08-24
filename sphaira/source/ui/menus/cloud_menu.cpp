@@ -22,6 +22,7 @@ namespace sphaira::ui::menu::cloud {
 
 // 避免与本菜单命名空间 sphaira::ui::menu::cloud 重名。
 namespace devcloud = sphaira::devoptab::cloud;
+namespace devcommon = sphaira::devoptab::common;
 
 namespace {
 
@@ -146,6 +147,58 @@ std::string HttpPostFormCookies(const std::string& url, const std::string& form,
     return resp;
 }
 
+std::string HttpGet(const std::string& url) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return {};
+    }
+    std::string resp;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    return resp;
+}
+
+std::string HttpPostForm(const std::string& url, const std::string& form) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return {};
+    }
+    std::string resp;
+    curl_slist* h = curl_slist_append(nullptr, "Content-Type: application/x-www-form-urlencoded");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, form.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)form.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+    return resp;
+}
+
+std::string ReadIniKey(const char* ini_path, const char* key) {
+    devcommon::MountConfigs configs;
+    devcommon::LoadConfigsFromIni(fs::FsPath{ini_path}, configs);
+    for (const auto& c : configs) {
+        const auto it = c.extra.find(key);
+        if (it != c.extra.end() && !it->second.empty()) {
+            return it->second;
+        }
+    }
+    return {};
+}
+
 } // namespace
 
 Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
@@ -189,8 +242,8 @@ void Menu::RefreshStatus() {
             // 风灵月影：设备身份自动鉴权。
             authed = true;
         } else {
-            common::MountConfigs configs;
-            common::LoadConfigsFromIni(fs::FsPath{p.ini_path}, configs);
+            devcommon::MountConfigs configs;
+            devcommon::LoadConfigsFromIni(fs::FsPath{p.ini_path}, configs);
 
             for (const auto& c : configs) {
                 const auto it = c.extra.find(p.auth_key);
@@ -282,6 +335,59 @@ void Menu::StartDeviceCodeLogin() {
             return;
         }
         m_login_type = "aliyun";
+    } else if (sec == "GOOGLEDRIVE") {
+        m_oauth_client_id = ReadIniKey("/config/sphaira/mount/googledrive.ini", "client_id");
+        m_oauth_client_secret = ReadIniKey("/config/sphaira/mount/googledrive.ini", "client_secret");
+        if (m_oauth_client_id.empty() || m_oauth_client_secret.empty()) {
+            App::Notify("请先在挂载表单填写 Client ID/Secret");
+            return;
+        }
+
+        const std::string form = "client_id=" + UrlEncode(m_oauth_client_id) +
+            "&scope=" + UrlEncode("https://www.googleapis.com/auth/drive");
+        const auto resp = HttpPostForm("https://oauth2.googleapis.com/device/code", form);
+        devcloud::Json j(resp);
+        if (!j) {
+            App::Notify("生成登录码失败");
+            return;
+        }
+
+        m_login_code = devcloud::js_str(j.get(), "device_code", "");
+        m_login_user_code = devcloud::js_str(j.get(), "user_code", "");
+        m_login_url = devcloud::js_str(j.get(), "verification_url", "");
+        if (m_login_code.empty() || m_login_user_code.empty() || m_login_url.empty()) {
+            App::Notify("生成登录码失败");
+            return;
+        }
+        m_login_type = "google";
+    } else if (sec == "BAIDU") {
+        m_oauth_client_id = ReadIniKey("/config/sphaira/mount/baidu.ini", "client_id");
+        m_oauth_client_secret = ReadIniKey("/config/sphaira/mount/baidu.ini", "client_secret");
+        if (m_oauth_client_id.empty() || m_oauth_client_secret.empty()) {
+            App::Notify("请先在挂载表单填写 Client ID/Secret");
+            return;
+        }
+
+        const std::string url = "https://openapi.baidu.com/oauth/2.0/device/code?response_type=device_code&client_id=" +
+            UrlEncode(m_oauth_client_id) + "&scope=" + UrlEncode("basic,netdisk");
+        const auto resp = HttpGet(url);
+        devcloud::Json j(resp);
+        if (!j) {
+            App::Notify("生成登录码失败");
+            return;
+        }
+
+        m_login_code = devcloud::js_str(j.get(), "device_code", "");
+        m_login_user_code = devcloud::js_str(j.get(), "user_code", "");
+        m_login_url = devcloud::js_str(j.get(), "qrcode_url", "");
+        if (m_login_url.empty()) {
+            m_login_url = devcloud::js_str(j.get(), "verification_url", "");
+        }
+        if (m_login_code.empty() || m_login_user_code.empty() || m_login_url.empty()) {
+            App::Notify("生成登录码失败");
+            return;
+        }
+        m_login_type = "baidu";
     } else {
         App::Notify("当前网盘暂不支持扫码登录，请用粘贴凭证");
         return;
@@ -312,6 +418,71 @@ void Menu::PollDeviceCodeLogin() {
 
     if (m_login_type == "aliyun") {
         PollAliyunLogin();
+        return;
+    }
+
+    if (m_login_type == "google") {
+        const std::string form = "client_id=" + UrlEncode(m_oauth_client_id) +
+            "&client_secret=" + UrlEncode(m_oauth_client_secret) +
+            "&code=" + UrlEncode(m_login_code) +
+            "&grant_type=" + UrlEncode("urn:ietf:params:oauth:grant-type:device_code");
+        const auto resp = HttpPostForm("https://oauth2.googleapis.com/token", form);
+        devcloud::Json j(resp);
+        if (!j) {
+            return;
+        }
+        const std::string access = devcloud::js_str(j.get(), "access_token", "");
+        const std::string refresh = devcloud::js_str(j.get(), "refresh_token", "");
+        const std::string err = devcloud::js_str(j.get(), "error", "");
+        if (!access.empty()) {
+            fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
+            ini_puts("GOOGLEDRIVE", "url", "https://example.com", "/config/sphaira/mount/googledrive.ini");
+            ini_puts("GOOGLEDRIVE", "access_token", access.c_str(), "/config/sphaira/mount/googledrive.ini");
+            ini_puts("GOOGLEDRIVE", "refresh_token", refresh.c_str(), "/config/sphaira/mount/googledrive.ini");
+            m_login_active = false;
+            ClearQr();
+            this->SetSubHeading("");
+            RefreshStatus();
+            App::Notify("谷歌网盘登录成功，重启后生效");
+        } else if (err == "expired_token" || err == "access_denied") {
+            m_login_active = false;
+            ClearQr();
+            this->SetSubHeading("");
+            App::Notify("登录码已过期，请重试");
+        }
+        // authorization_pending / slow_down：继续轮询。
+        return;
+    }
+
+    if (m_login_type == "baidu") {
+        const std::string url = "https://openapi.baidu.com/oauth/2.0/token?grant_type=device_token&code=" +
+            UrlEncode(m_login_code) + "&client_id=" + UrlEncode(m_oauth_client_id) +
+            "&client_secret=" + UrlEncode(m_oauth_client_secret);
+        const auto resp = HttpGet(url);
+        devcloud::Json j(resp);
+        if (!j) {
+            return;
+        }
+        const std::string access = devcloud::js_str(j.get(), "access_token", "");
+        const std::string refresh = devcloud::js_str(j.get(), "refresh_token", "");
+        const std::string err = devcloud::js_str(j.get(), "error", "");
+        if (!access.empty()) {
+            fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
+            ini_puts("BAIDU", "url", "https://example.com", "/config/sphaira/mount/baidu.ini");
+            ini_puts("BAIDU", "access_token", access.c_str(), "/config/sphaira/mount/baidu.ini");
+            ini_puts("BAIDU", "refresh_token", refresh.c_str(), "/config/sphaira/mount/baidu.ini");
+            m_login_active = false;
+            ClearQr();
+            this->SetSubHeading("");
+            RefreshStatus();
+            App::Notify("百度网盘登录成功，重启后生效");
+        } else if (err == "expired_token" || err == "authorization_expired" || err == "access_denied") {
+            m_login_active = false;
+            ClearQr();
+            this->SetSubHeading("");
+            App::Notify("登录码已过期，请重试");
+        }
+        // authorization_pending：继续轮询。
         return;
     }
 
@@ -457,9 +628,18 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
             gfx::drawImage(vg, x, y, size, size, m_qr_image);
         }
 
-        gfx::drawTextArgs(vg, GetX() + GetW() / 2.f, GetY() + GetH() - 70.f, 24.f,
-            NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE, theme->GetColour(ThemeEntryID_TEXT),
-            "请用手机扫描二维码登录，等待授权...");
+        if (!m_login_user_code.empty()) {
+            gfx::drawTextArgs(vg, GetX() + GetW() / 2.f, GetY() + GetH() - 80.f, 30.f,
+                NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE, theme->GetColour(ThemeEntryID_TEXT),
+                "登录码：%s", m_login_user_code.c_str());
+            gfx::drawTextArgs(vg, GetX() + GetW() / 2.f, GetY() + GetH() - 36.f, 20.f,
+                NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE, theme->GetColour(ThemeEntryID_TEXT),
+                "请用手机打开链接并输入上面的登录码");
+        } else {
+            gfx::drawTextArgs(vg, GetX() + GetW() / 2.f, GetY() + GetH() - 70.f, 24.f,
+                NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE, theme->GetColour(ThemeEntryID_TEXT),
+                "请用手机扫描二维码登录，等待授权...");
+        }
         return;
     }
 
