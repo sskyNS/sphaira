@@ -110,7 +110,6 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
     }
 
     int resolve_download_url(const cloud::CloudEntry& e, std::string& url, curl_slist*& headers) override {
-        (void)headers;
         if (!auth()) {
             return -EIO;
         }
@@ -139,7 +138,14 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
                 url = cloud::js_str(data, "download_url", "");
             }
         }
-        return url.empty() ? -EIO : 0;
+
+        if (url.empty()) {
+            return -EIO;
+        }
+
+        // 光鸭下载直链需要 Referer（否则可能 403/412）。
+        headers = curl_slist_append(nullptr, "Referer: https://www.guangyapan.com/");
+        return 0;
     }
 
     int make_dir(const std::string& path) override {

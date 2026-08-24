@@ -196,11 +196,16 @@ struct BaiduDevice final : cloud::CloudDiskDevice {
     }
 
     int resolve_download_url(const cloud::CloudEntry& e, std::string& url, curl_slist*& headers) override {
-        (void)headers;
         if (!auth()) {
             return -EIO;
         }
-        return use_web() ? resolve_download_url_web(e, url) : resolve_download_url_xpan(e, url);
+        const int rc = use_web() ? resolve_download_url_web(e, url) : resolve_download_url_xpan(e, url);
+        if (rc < 0) {
+            return rc;
+        }
+        // 百度下载直链需要 User-Agent: pan.baidu.com（否则 >20M 文件报错）。
+        headers = curl_slist_append(nullptr, "User-Agent: pan.baidu.com");
+        return 0;
     }
 
     int resolve_download_url_xpan(const cloud::CloudEntry& e, std::string& url) {

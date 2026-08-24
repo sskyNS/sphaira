@@ -76,7 +76,6 @@ struct QuarkDevice final : cloud::CloudDiskDevice {
     }
 
     int resolve_download_url(const cloud::CloudEntry& e, std::string& url, curl_slist*& headers) override {
-        (void)headers;
         if (!auth()) {
             return -EIO;
         }
@@ -94,27 +93,29 @@ struct QuarkDevice final : cloud::CloudDiskDevice {
         }
 
         auto data = cloud::js_get(j.get(), "data");
-        const int code = cloud::js_int(j.get(), "code", -1);
 
         // 同步：data 是数组，直接取 download_url。
         if (data && yyjson_is_arr(data) && yyjson_arr_size(data) > 0) {
-            auto first = yyjson_arr_get_first(data);
-            url = cloud::js_str(first, "download_url", "");
-            if (!url.empty()) {
-                return 0;
-            }
+            url = cloud::js_str(yyjson_arr_get_first(data), "download_url", "");
         }
-
         // 异步：data 含 task_id，需要轮询。
-        if (data && yyjson_is_obj(data)) {
+        if (url.empty() && data && yyjson_is_obj(data)) {
             const std::string task_id = cloud::js_str(data, "task_id", "");
             if (!task_id.empty()) {
-                return poll_download_task(task_id, url);
+                const int rc = poll_download_task(task_id, url);
+                if (rc < 0) {
+                    return rc;
+                }
             }
         }
 
-        (void)code;
-        return -EIO;
+        if (url.empty()) {
+            return -EIO;
+        }
+
+        // 夸克下载直链必须携带 Referer（否则返回 412 Precondition Failed）。
+        headers = download_headers();
+        return 0;
     }
 
     int make_dir(const std::string& path) override {
@@ -218,14 +219,33 @@ private:
         return -EIO;
     }
 
+    // 夸克客户端 UA（对齐 quarkpan-rs / 威软夸克助手，获取链接与下载直链必须一致）。
+    static constexpr const char* QUARK_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        " (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160"
+        " Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch";
+
     curl_slist* headers() {
         curl_slist* h = nullptr;
         if (!m_cookie.empty()) {
             h = curl_slist_append(h, ("Cookie: " + m_cookie).c_str());
         }
-        h = curl_slist_append(h, "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160 Safari/537.36");
+        h = curl_slist_append(h, (std::string("User-Agent: ") + QUARK_UA).c_str());
         h = curl_slist_append(h, "Accept: application/json, text/plain, */*");
         h = curl_slist_append(h, "Content-Type: application/json");
+        h = curl_slist_append(h, "Origin: https://pan.quark.cn");
+        h = curl_slist_append(h, "Referer: https://pan.quark.cn/");
+        return h;
+    }
+
+    // 下载直链所需的请求头。夸克 CDN 会校验 Referer/Origin/UA，缺失时返回 412 Precondition Failed。
+    curl_slist* download_headers() {
+        curl_slist* h = nullptr;
+        if (!m_cookie.empty()) {
+            h = curl_slist_append(h, ("Cookie: " + m_cookie).c_str());
+        }
+        h = curl_slist_append(h, (std::string("User-Agent: ") + QUARK_UA).c_str());
+        h = curl_slist_append(h, "Accept: */*");
         h = curl_slist_append(h, "Origin: https://pan.quark.cn");
         h = curl_slist_append(h, "Referer: https://pan.quark.cn/");
         return h;
