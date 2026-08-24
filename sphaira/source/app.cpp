@@ -1856,6 +1856,7 @@ App::App(const char* argv0) {
             devoptab::MountQuarkAll();
             devoptab::MountAliyunAll();
             devoptab::MountGuangyaAll();
+            devoptab::MountFenglingAll();
         }
         #endif // ENABLE_DEVOPTAB_CLOUD
 

@@ -41,6 +41,7 @@ enum class DevoptabType {
     QUARK,
     ALIYUN,
     GUANGYA,
+    FENGLING,
 #endif
 };
 
@@ -66,6 +67,7 @@ const TypeEntry TYPE_ENTRIES[] = {
     {"QUARK", "https://", 443, DevoptabType::QUARK},
     {"ALIYUN", "https://", 443, DevoptabType::ALIYUN},
     {"GUANGYA", "https://", 443, DevoptabType::GUANGYA},
+    {"FENGLING", "https://", 443, DevoptabType::FENGLING},
 #endif
 };
 
@@ -91,6 +93,7 @@ auto BuildIniPathFromType(DevoptabType type) -> fs::FsPath {
         case DevoptabType::QUARK: return MOUNT_PATH "/quark.ini";
         case DevoptabType::ALIYUN: return MOUNT_PATH "/aliyun.ini";
         case DevoptabType::GUANGYA: return MOUNT_PATH "/guangya.ini";
+        case DevoptabType::FENGLING: return MOUNT_PATH "/fengling.ini";
 #endif
     }
 

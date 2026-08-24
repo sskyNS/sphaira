@@ -30,12 +30,13 @@ Result MountFatfsAll();
 Result MountGameAll();
 Result MountInternalMounts();
 
-// 云盘（百度网盘 / 谷歌网盘 / 夸克网盘 / 阿里云盘 / 光鸭云盘）
+// 云盘（百度网盘 / 谷歌网盘 / 夸克网盘 / 阿里云盘 / 光鸭云盘 / 风灵月影公共服务器）
 Result MountBaiduAll();
 Result MountGoogleDriveAll();
 Result MountQuarkAll();
 Result MountAliyunAll();
 Result MountGuangyaAll();
+Result MountFenglingAll();
 
 Result GetNetworkDevices(location::StdioEntries& out);
 void UmountAllNeworkDevices();

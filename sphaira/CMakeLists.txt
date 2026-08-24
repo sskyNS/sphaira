@@ -511,6 +511,7 @@ if (ENABLE_DEVOPTAB_CLOUD)
         source/utils/cloud_quark.cpp
         source/utils/cloud_aliyun.cpp
         source/utils/cloud_guangya.cpp
+        source/utils/cloud_fengling.cpp
     )
 endif()
 
