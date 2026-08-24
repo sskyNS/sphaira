@@ -364,6 +364,40 @@ AiConfig ReadAiConfig() {
     return cfg;
 }
 
+// 读取用户指定的扫描路径（逗号/分号分隔），为空表示扫描 SD + 全部网盘。
+std::vector<std::string> ReadScanPaths() {
+    std::vector<std::string> paths;
+    char buf[4096]{};
+    ini_gets("scan", "path", "", buf, sizeof(buf), PLAYER_INI);
+    const std::string str = buf;
+    if (str.empty()) {
+        return paths;
+    }
+
+    size_t start = 0;
+    while (start <= str.size()) {
+        size_t end = str.find_first_of(",;", start);
+        if (end == std::string::npos) {
+            end = str.size();
+        }
+        std::string p = str.substr(start, end - start);
+        while (!p.empty() && (p.front() == ' ' || p.front() == '\t')) {
+            p.erase(p.begin());
+        }
+        while (!p.empty() && (p.back() == ' ' || p.back() == '\t')) {
+            p.pop_back();
+        }
+        if (!p.empty()) {
+            paths.push_back(std::move(p));
+        }
+        if (end == str.size()) {
+            break;
+        }
+        start = end + 1;
+    }
+    return paths;
+}
+
 bool HttpPostJsonAuth(const std::string& url, const std::string& body, const std::string& api_key, std::string& out) {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -886,24 +920,33 @@ std::vector<MediaEntry> Menu::DoScan(sphaira::ui::ProgressBox* pbox) {
         }
     };
 
-    // 1. SD 卡。
-    {
+    // 1. 若用户指定了扫描路径，只扫描这些路径（SD 卡上）。
+    const auto scan_paths = ReadScanPaths();
+    if (!scan_paths.empty()) {
+        fs::FsNativeSd sd;
+        for (const auto& p : scan_paths) {
+            if (pbox && pbox->ShouldExit()) break;
+            Walker w{out, pbox, "SD 卡", ""};
+            w.Walk(&sd, p, 0);
+        }
+    } else {
+        // 默认：扫描 SD 卡根目录。
         fs::FsNativeSd sd;
         Walker w{out, pbox, "SD 卡", ""};
         w.Walk(&sd, "/", 0);
-    }
 
-    // 2. 所有已挂载的网盘 / USB / HDD 等 stdio 设备。
-    for (const auto& e : location::GetStdio(false)) {
-        if (pbox && pbox->ShouldExit()) break;
-        if (e.fs_hidden) {
-            continue;
+        // 2. 所有已挂载的网盘 / USB / HDD 等 stdio 设备。
+        for (const auto& e : location::GetStdio(false)) {
+            if (pbox && pbox->ShouldExit()) break;
+            if (e.fs_hidden) {
+                continue;
+            }
+
+            const std::string source = SourceFromMount(e.mount, e.name);
+            auto fs = std::make_shared<fs::FsStdio>(true, fs::FsPath{e.mount});
+            Walker w{out, pbox, source, e.mount};
+            w.Walk(fs.get(), e.mount, 0);
         }
-
-        const std::string source = SourceFromMount(e.mount, e.name);
-        auto fs = std::make_shared<fs::FsStdio>(true, fs::FsPath{e.mount});
-        Walker w{out, pbox, source, e.mount};
-        w.Walk(fs.get(), e.mount, 0);
     }
 
     // 3. AI 入库：用 TMDB 为去重后的标题刮削海报与年份（可选，需自备 API key）。

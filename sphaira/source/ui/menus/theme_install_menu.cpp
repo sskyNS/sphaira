@@ -128,8 +128,14 @@ void Menu::Install() {
     const char* szs_name = std::strrchr(target->SzsFile.c_str(), '/');
     szs_name = szs_name ? szs_name + 1 : target->SzsFile.c_str();
 
-    fs::FsPath base_path = std::string("/themes/systemData/") + title_id + "/" + szs_name;
+    // 优先直接读 /themes/systemData/{szs_name}（不嵌套 TitleId 子目录）。
+    fs::FsPath base_path = std::string("/themes/systemData/") + szs_name;
     if (!fs::FileExists(base_path)) {
+        // 回退：带 TitleId 子目录的标准写法。
+        base_path = std::string("/themes/systemData/") + title_id + "/" + szs_name;
+    }
+    if (!fs::FileExists(base_path)) {
+        // 最后回退到本工具自己的 dump 目录。
         base_path = std::string(DUMP_DIR) + "/" + title_id + target->SzsFile;
     }
 

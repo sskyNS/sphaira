@@ -30,7 +30,7 @@ namespace devcommon = sphaira::devoptab::common;
 namespace {
 
 const Provider PROVIDERS[] = {
-    { "百度网盘",       "/config/sphaira/mount/baidu.ini",       "BAIDU",       "refresh_token", "粘贴百度网盘 refresh_token" },
+    { "百度网盘",       "/config/sphaira/mount/baidu.ini",       "BAIDU",       "cookie", "扫码登录（无需授权码）" },
     { "谷歌网盘",       "/config/sphaira/mount/googledrive.ini", "GOOGLEDRIVE", "refresh_token", "粘贴 Google Drive refresh_token" },
     { "夸克网盘",       "/config/sphaira/mount/quark.ini",       "QUARK",       "cookie",        "粘贴夸克网盘 cookie" },
     { "阿里云盘",       "/config/sphaira/mount/aliyun.ini",      "ALIYUN",      "refresh_token", "粘贴阿里云盘 refresh_token" },
@@ -445,6 +445,38 @@ bool BaiduOfflineDownload(const std::string& url) {
     return devcloud::js_int(j.get(), "errno", -1) == 0;
 }
 
+std::string UrlDecode(const std::string& in) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return in;
+    }
+    int out_len = 0;
+    char* out = curl_easy_unescape(curl, in.c_str(), (int)in.size(), &out_len);
+    std::string result = out ? std::string(out, out_len) : in;
+    curl_free(out);
+    curl_easy_cleanup(curl);
+    return result;
+}
+
+// 大小写不敏感地从 URL 查询串里提取 key=value（已做 URL 解码）。
+std::string ExtractQueryCI(const std::string& url, const char* key) {
+    std::string url_ci = url;
+    std::string key_ci = key;
+    for (auto& c : url_ci) {
+        c = (char)std::toupper((unsigned char)c);
+    }
+    for (auto& c : key_ci) {
+        c = (char)std::toupper((unsigned char)c);
+    }
+    const size_t pos = url_ci.find(key_ci + "=");
+    if (pos == std::string::npos) {
+        return {};
+    }
+    const size_t start = pos + key_ci.size() + 1;
+    const size_t end = url.find('&', start);
+    return UrlDecode(url.substr(start, end == std::string::npos ? std::string::npos : end - start));
+}
+
 } // namespace
 
 Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
@@ -757,33 +789,22 @@ void Menu::StartDeviceCodeLogin() {
         }
         m_login_type = "google";
     } else if (sec == "BAIDU") {
-        m_oauth_client_id = ReadIniKey("/config/sphaira/mount/baidu.ini", "client_id");
-        m_oauth_client_secret = ReadIniKey("/config/sphaira/mount/baidu.ini", "client_secret");
-        if (m_oauth_client_id.empty() || m_oauth_client_secret.empty()) {
-            App::Notify("请先在挂载表单填写 Client ID/Secret");
-            return;
-        }
-
-        const std::string url = "https://openapi.baidu.com/oauth/2.0/device/code?response_type=device_code&client_id=" +
-            UrlEncode(m_oauth_client_id) + "&scope=" + UrlEncode("basic,netdisk");
+        // 百度扫码登录：无需授权码，扫描二维码后在手机端直接确认即可。
+        const std::string url = "https://passport.baidu.com/v2/api/getqrcode?lp=pc&qrloginfrom=pc&apiver=v3&tt=" + std::to_string(NowMs());
         const auto resp = HttpGet(url);
         devcloud::Json j(resp);
         if (!j) {
-            App::Notify("生成登录码失败");
+            App::Notify("生成二维码失败");
             return;
         }
 
-        m_login_code = devcloud::js_str(j.get(), "device_code", "");
-        m_login_user_code = devcloud::js_str(j.get(), "user_code", "");
-        m_login_url = devcloud::js_str(j.get(), "qrcode_url", "");
-        if (m_login_url.empty()) {
-            m_login_url = devcloud::js_str(j.get(), "verification_url", "");
-        }
-        if (m_login_code.empty() || m_login_user_code.empty() || m_login_url.empty()) {
-            App::Notify("生成登录码失败");
+        m_login_code = devcloud::js_str(j.get(), "sign", "");
+        m_login_url = devcloud::js_str(j.get(), "imgurl", "");
+        if (m_login_code.empty() || m_login_url.empty()) {
+            App::Notify("生成二维码失败");
             return;
         }
-        m_login_type = "baidu";
+        m_login_type = "baidu_qr";
     } else if (sec == "QUARK") {
         const std::string url = "https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2&request_id=" + std::to_string(NowMs()) + "&uc_param_str=";
         const auto resp = HttpGetQuark(url);
@@ -862,35 +883,35 @@ void Menu::PollDeviceCodeLogin() {
         return;
     }
 
-    if (m_login_type == "baidu") {
-        const std::string url = "https://openapi.baidu.com/oauth/2.0/token?grant_type=device_token&code=" +
-            UrlEncode(m_login_code) + "&client_id=" + UrlEncode(m_oauth_client_id) +
-            "&client_secret=" + UrlEncode(m_oauth_client_secret);
+    if (m_login_type == "baidu_qr") {
+        const std::string url = "https://passport.baidu.com/channel/unicast?channel_id=" + UrlEncode(m_login_code) +
+            "&tpl=mn&apiver=v3&tt=" + std::to_string(NowMs());
         const auto resp = HttpGet(url);
         devcloud::Json j(resp);
         if (!j) {
             return;
         }
-        const std::string access = devcloud::js_str(j.get(), "access_token", "");
-        const std::string refresh = devcloud::js_str(j.get(), "refresh_token", "");
-        const std::string err = devcloud::js_str(j.get(), "error", "");
-        if (!access.empty()) {
-            fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
-            ini_puts("BAIDU", "url", "https://example.com", "/config/sphaira/mount/baidu.ini");
-            ini_puts("BAIDU", "access_token", access.c_str(), "/config/sphaira/mount/baidu.ini");
-            ini_puts("BAIDU", "refresh_token", refresh.c_str(), "/config/sphaira/mount/baidu.ini");
-            m_login_active = false;
-            ClearQr();
-            this->SetSubHeading("");
-            RefreshStatus();
-            App::Notify("百度网盘登录成功，重启后生效");
-        } else if (err == "expired_token" || err == "authorization_expired" || err == "access_denied") {
-            m_login_active = false;
-            ClearQr();
-            this->SetSubHeading("");
-            App::Notify("登录码已过期，请重试");
+
+        const int err = devcloud::js_int(j.get(), "errno", -1);
+        if (err == 0) {
+            // 已扫码并确认：channel_v 里的 v 是重定向 URL，携带 BDUSS。
+            const std::string channel_v = devcloud::js_str(j.get(), "channel_v", "");
+            devcloud::Json vj(channel_v);
+            const std::string v = devcloud::js_str(vj.get(), "v", "");
+            const std::string bduss = ExtractQueryCI(v, "BDUSS");
+            if (!bduss.empty()) {
+                fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
+                ini_puts("BAIDU", "url", "https://example.com", "/config/sphaira/mount/baidu.ini");
+                ini_puts("BAIDU", "cookie", bduss.c_str(), "/config/sphaira/mount/baidu.ini");
+                m_login_active = false;
+                ClearQr();
+                this->SetSubHeading("");
+                RefreshStatus();
+                App::Notify("百度网盘登录成功，重启后生效");
+                return;
+            }
         }
-        // authorization_pending：继续轮询。
+        // errno != 0：未扫描或未确认，继续轮询。
         return;
     }
 
