@@ -35,6 +35,13 @@ enum class DevoptabType {
     NFS,
     SMB,
     WEBDAV,
+#ifdef ENABLE_DEVOPTAB_CLOUD
+    BAIDU,
+    GOOGLEDRIVE,
+    QUARK,
+    ALIYUN,
+    GUANGYA,
+#endif
 };
 
 struct TypeEntry {
@@ -53,6 +60,13 @@ const TypeEntry TYPE_ENTRIES[] = {
     {"NFS", "nfs://", 2049, DevoptabType::NFS},
     {"SMB", "smb://", 445, DevoptabType::SMB},
     {"WEBDAV", "webdav://", 80, DevoptabType::WEBDAV},
+#ifdef ENABLE_DEVOPTAB_CLOUD
+    {"BAIDU", "https://", 443, DevoptabType::BAIDU},
+    {"GOOGLEDRIVE", "https://", 443, DevoptabType::GOOGLEDRIVE},
+    {"QUARK", "https://", 443, DevoptabType::QUARK},
+    {"ALIYUN", "https://", 443, DevoptabType::ALIYUN},
+    {"GUANGYA", "https://", 443, DevoptabType::GUANGYA},
+#endif
 };
 
 struct TypeConfig {
@@ -71,6 +85,13 @@ auto BuildIniPathFromType(DevoptabType type) -> fs::FsPath {
         case DevoptabType::NFS: return MOUNT_PATH "/nfs.ini";
         case DevoptabType::SMB: return MOUNT_PATH "/smb.ini";
         case DevoptabType::WEBDAV: return MOUNT_PATH "/webdav.ini";
+#ifdef ENABLE_DEVOPTAB_CLOUD
+        case DevoptabType::BAIDU: return MOUNT_PATH "/baidu.ini";
+        case DevoptabType::GOOGLEDRIVE: return MOUNT_PATH "/googledrive.ini";
+        case DevoptabType::QUARK: return MOUNT_PATH "/quark.ini";
+        case DevoptabType::ALIYUN: return MOUNT_PATH "/aliyun.ini";
+        case DevoptabType::GUANGYA: return MOUNT_PATH "/guangya.ini";
+#endif
     }
 
     std::unreachable();
@@ -118,6 +139,15 @@ private:
     SidebarEntryTextInput* m_user{};
     SidebarEntryTextInput* m_pass{};
     SidebarEntryTextInput* m_dump_path{};
+
+    // 云盘鉴权字段（作为 extra 键写入 ini，非云盘类型留空即可）。
+    SidebarEntryTextInput* m_client_id{};
+    SidebarEntryTextInput* m_client_secret{};
+    SidebarEntryTextInput* m_refresh_token{};
+    SidebarEntryTextInput* m_access_token{};
+    SidebarEntryTextInput* m_cookie{};
+    SidebarEntryTextInput* m_drive_id{};
+    SidebarEntryTextInput* m_device_id{};
 };
 
 DevoptabForm::DevoptabForm(DevoptabType type, const MountConfig& config)
@@ -203,6 +233,41 @@ void DevoptabForm::SetupButtons(bool type_change) {
         "Optional: Set the dump path used when exporting games and saves."_i18n
     );
 
+    m_client_id = this->Add<SidebarEntryTextInput>(
+        "Client ID"_i18n, m_config.extra["client_id"], "", "", -1, PATH_MAX,
+        "Cloud disk OAuth client_id (Baidu / Google Drive)."_i18n
+    );
+
+    m_client_secret = this->Add<SidebarEntryTextInput>(
+        "Client Secret"_i18n, m_config.extra["client_secret"], "", "", -1, PATH_MAX,
+        "Cloud disk OAuth client_secret (Baidu / Google Drive)."_i18n
+    );
+
+    m_refresh_token = this->Add<SidebarEntryTextInput>(
+        "Refresh Token"_i18n, m_config.extra["refresh_token"], "", "", -1, PATH_MAX,
+        "Cloud disk OAuth refresh_token (Baidu / Google / Aliyun / Guangya)."_i18n
+    );
+
+    m_access_token = this->Add<SidebarEntryTextInput>(
+        "Access Token"_i18n, m_config.extra["access_token"], "", "", -1, PATH_MAX,
+        "Cloud disk cached access_token (optional)."_i18n
+    );
+
+    m_cookie = this->Add<SidebarEntryTextInput>(
+        "Cookie"_i18n, m_config.extra["cookie"], "", "", -1, PATH_MAX,
+        "Quark cloud drive cookie."_i18n
+    );
+
+    m_drive_id = this->Add<SidebarEntryTextInput>(
+        "Drive ID"_i18n, m_config.extra["drive_id"], "", "", -1, PATH_MAX,
+        "Aliyun drive_id (optional)."_i18n
+    );
+
+    m_device_id = this->Add<SidebarEntryTextInput>(
+        "Device ID"_i18n, m_config.extra["device_id"], "", "", -1, PATH_MAX,
+        "Guangya device_id (optional)."_i18n
+    );
+
     this->Add<SidebarEntryBool>(
         "Read only"_i18n, m_config.read_only,
         i18n::get("mount_readonly_info",
@@ -263,6 +328,15 @@ void DevoptabForm::SetupButtons(bool type_change) {
         ini_puts(m_config.name.c_str(), "no_stat_dir", m_config.no_stat_dir ? "true" : "false", ini_path);
         ini_puts(m_config.name.c_str(), "fs_hidden", m_config.fs_hidden ? "true" : "false", ini_path);
         ini_puts(m_config.name.c_str(), "dump_hidden", m_config.dump_hidden ? "true" : "false", ini_path);
+
+        // 云盘鉴权字段（extra 键）。
+        ini_puts(m_config.name.c_str(), "client_id", m_client_id->GetValue().c_str(), ini_path);
+        ini_puts(m_config.name.c_str(), "client_secret", m_client_secret->GetValue().c_str(), ini_path);
+        ini_puts(m_config.name.c_str(), "refresh_token", m_refresh_token->GetValue().c_str(), ini_path);
+        ini_puts(m_config.name.c_str(), "access_token", m_access_token->GetValue().c_str(), ini_path);
+        ini_puts(m_config.name.c_str(), "cookie", m_cookie->GetValue().c_str(), ini_path);
+        ini_puts(m_config.name.c_str(), "drive_id", m_drive_id->GetValue().c_str(), ini_path);
+        ini_puts(m_config.name.c_str(), "device_id", m_device_id->GetValue().c_str(), ini_path);
 
         App::Notify("Mount entry saved. Restart Sphaira to apply changes."_i18n);
 
