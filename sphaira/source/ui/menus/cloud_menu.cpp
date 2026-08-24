@@ -9,6 +9,7 @@
 #include "utils/devoptab_common.hpp"
 #include "utils/cloud_disk.hpp"
 #include "utils/qr.hpp"
+#include "location.hpp"
 
 #include "ui/menus/cloud_menu.hpp"
 #include "ui/menus/filebrowser.hpp"
@@ -34,6 +35,41 @@ const Provider PROVIDERS[] = {
     { "光鸭云盘",       "/config/sphaira/mount/guangya.ini",     "GUANGYA",     "access_token",  "粘贴光鸭云盘 access_token" },
     { "风灵月影服务器", "/config/sphaira/mount/fengling.ini",    "FENGLING",    "",              "设备身份自动鉴权，无需配置" },
 };
+
+constexpr const u8 LOGO_BAIDU[]{
+    #embed <icons/cloud_baidu.png>
+};
+
+constexpr const u8 LOGO_GOOGLE[]{
+    #embed <icons/cloud_google.png>
+};
+
+constexpr const u8 LOGO_QUARK[]{
+    #embed <icons/cloud_quark.png>
+};
+
+constexpr const u8 LOGO_ALIYUN[]{
+    #embed <icons/cloud_aliyun.png>
+};
+
+constexpr const u8 LOGO_GUANGYA[]{
+    #embed <icons/cloud_guangya.png>
+};
+
+constexpr const u8 LOGO_FENGLING[]{
+    #embed <icons/cloud_fengling.png>
+};
+
+// 按 section 名加载对应网盘的 logo，返回 nanovg 图像句柄；失败返回 0。
+int LoadLogoForSection(const char* section, NVGcontext* vg) {
+    if (!std::strcmp(section, "BAIDU")) return nvgCreateImageMem(vg, 0, LOGO_BAIDU, sizeof(LOGO_BAIDU));
+    if (!std::strcmp(section, "GOOGLEDRIVE")) return nvgCreateImageMem(vg, 0, LOGO_GOOGLE, sizeof(LOGO_GOOGLE));
+    if (!std::strcmp(section, "QUARK")) return nvgCreateImageMem(vg, 0, LOGO_QUARK, sizeof(LOGO_QUARK));
+    if (!std::strcmp(section, "ALIYUN")) return nvgCreateImageMem(vg, 0, LOGO_ALIYUN, sizeof(LOGO_ALIYUN));
+    if (!std::strcmp(section, "GUANGYA")) return nvgCreateImageMem(vg, 0, LOGO_GUANGYA, sizeof(LOGO_GUANGYA));
+    if (!std::strcmp(section, "FENGLING")) return nvgCreateImageMem(vg, 0, LOGO_FENGLING, sizeof(LOGO_FENGLING));
+    return 0;
+}
 
 u64 NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -206,7 +242,7 @@ Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
         std::make_pair(Button::B, Action{"返回", [this](){ SetPop(); }}),
         std::make_pair(Button::A, Action{"登录 / 粘贴凭证", [this](){ Login(); }}),
         std::make_pair(Button::Y, Action{"扫码登录", [this](){ StartDeviceCodeLogin(); }}),
-        std::make_pair(Button::X, Action{"打开文件浏览器", [](){ App::Push<filebrowser::Menu>(MenuFlag_None); }})
+        std::make_pair(Button::X, Action{"打开网盘", [this](){ OpenFileBrowser(); }})
     );
 
     for (const auto& p : PROVIDERS) {
@@ -220,6 +256,11 @@ Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
 Menu::~Menu() {
     if (m_qr_image) {
         nvgDeleteImage(App::GetVg(), m_qr_image);
+    }
+    for (const auto image : m_logo_images) {
+        if (image) {
+            nvgDeleteImage(App::GetVg(), image);
+        }
     }
 }
 
@@ -281,6 +322,39 @@ void Menu::Login() {
 
     RefreshStatus();
     App::Notify("已保存，重启 Sphaira 后生效");
+}
+
+void Menu::OpenFileBrowser() {
+    if (m_index >= m_entries.size()) {
+        return;
+    }
+
+    const auto& p = m_entries[m_index];
+
+    // 挂载点命名规则：`[SECTION] name:/`（见 devoptab_common.cpp MountNetworkDevice）。
+    const std::string prefix = "[" + std::string(p.section) + "] ";
+
+    for (const auto& e : location::GetStdio(false)) {
+        if (!e.mount.starts_with(prefix)) {
+            continue;
+        }
+
+        const fs::FsPath mount{e.mount};
+        auto fs = std::make_shared<fs::FsStdio>(true, mount);
+
+        const filebrowser::FsEntry fs_entry{
+            .name = fs::FsPath{e.name},
+            .root = mount,
+            .type = filebrowser::FsType::Stdio,
+            .flags = e.flags,
+        };
+
+        const auto options = filebrowser::FsOption_All & ~filebrowser::FsOption_LoadAssoc;
+        App::Push<filebrowser::Menu>(fs, fs_entry, fs->Root(), options);
+        return;
+    }
+
+    App::Notify("未挂载，请先登录配置并重启 Sphaira");
 }
 
 void Menu::StartDeviceCodeLogin() {
@@ -643,6 +717,10 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
         return;
     }
 
+    if (m_logo_images.size() != m_entries.size()) {
+        m_logo_images.resize(m_entries.size(), 0);
+    }
+
     m_list->Draw(vg, theme, m_entries.size(), [this](auto* vg, auto* theme, auto v, auto pos) {
         const auto& p = m_entries[pos];
         const bool selected = pos == m_index;
@@ -652,7 +730,15 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
             status = "自动";
         }
 
-        DrawEntryNoImage(vg, theme, grid::LayoutType_List, v, selected, p.name, "", status);
+        int image = 0;
+        if (pos < m_logo_images.size()) {
+            if (!m_logo_images[pos]) {
+                m_logo_images[pos] = LoadLogoForSection(p.section, vg);
+            }
+            image = m_logo_images[pos];
+        }
+
+        DrawEntry(vg, theme, grid::LayoutType_List, v, selected, image, p.name, "", status);
     });
 }
 

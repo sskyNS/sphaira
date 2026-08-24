@@ -28,6 +28,7 @@ struct Menu final : grid::Menu {
 
 private:
     void Login();
+    void OpenFileBrowser();
     void StartDeviceCodeLogin();
     void PollDeviceCodeLogin();
     void PollAliyunLogin();
@@ -55,6 +56,9 @@ private:
     std::vector<std::uint8_t> m_qr_rgba{};
     int m_qr_size{};
     int m_qr_image{};
+
+    // 每个网盘的 logo（nanovg 图像句柄，按 PROVIDERS 顺序）。
+    std::vector<int> m_logo_images{};
 };
 
 } // namespace sphaira::ui::menu::cloud
