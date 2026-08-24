@@ -105,7 +105,7 @@ struct AliyunDevice final : cloud::CloudDiskDevice {
         body += ",\"file_id\":\"" + e.id + "\"";
         body += ",\"expire_sec\":14400}";
 
-        curl_slist* h = headers();
+        curl_slist* h = this->headers();
         ON_SCOPE_EXIT(curl_slist_free_all(h));
         const auto resp = http_post(std::string(API_BASE) + "/v2/file/get_download_url", body, h);
 

@@ -84,7 +84,7 @@ struct QuarkDevice final : cloud::CloudDiskDevice {
         const std::string body = "{\"fids\":[\"" + e.id + "\"]}";
         const std::string req = std::string(API_BASE) + "/file/download?pr=ucpro&fr=pc";
 
-        curl_slist* h = headers();
+        curl_slist* h = this->headers();
         ON_SCOPE_EXIT(curl_slist_free_all(h));
         const auto resp = http_post(req, body, h);
 

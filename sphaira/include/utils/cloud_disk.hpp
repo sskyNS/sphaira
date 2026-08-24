@@ -71,6 +71,10 @@ struct Json {
     explicit operator bool() const {
         return root != nullptr;
     }
+
+    yyjson_val* get() const {
+        return root;
+    }
 };
 
 inline yyjson_val* js_get(yyjson_val* obj, const char* key) {
