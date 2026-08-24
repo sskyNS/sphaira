@@ -186,6 +186,26 @@ add_executable(sphaira
     source/yati/nx/nxdumptool/save.c
 )
 
+# SwitchThemeInjector 移植的 theme 模块依赖 C++ 异常（throw/try-catch）和
+# RTTI（dynamic_cast），需要覆盖顶层 CMakeLists 里的 -fno-exceptions / -fno-rtti。
+set_source_files_properties(
+    source/theme/buffer.cpp
+    source/theme/yaz0.cpp
+    source/theme/sarc.cpp
+    source/theme/common.cpp
+    source/theme/bntx.cpp
+    source/theme/bflyt.cpp
+    source/theme/bflan.cpp
+    source/theme/nxtheme.cpp
+    source/theme/layouts.cpp
+    source/theme/new_firm_fixes.cpp
+    source/theme/patcher.cpp
+    source/theme/templates.cpp
+    source/theme/install.cpp
+    source/theme/dump.cpp
+    PROPERTIES COMPILE_OPTIONS "-fexceptions;-frtti"
+)
+
 target_compile_definitions(sphaira PRIVATE
     -DAPP_VERSION="${sphaira_VERSION}"
     -DAPP_DISPLAY_VERSION="${sphaira_DISPLAY_VERSION}"

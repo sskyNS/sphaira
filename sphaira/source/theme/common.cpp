@@ -1,4 +1,5 @@
 #include "theme/common.hpp"
+#include "defines.hpp"
 #include "log.hpp"
 
 #include <cstdio>

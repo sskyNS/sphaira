@@ -3,6 +3,7 @@
 #include "theme/sarc.hpp"
 #include "theme/yaz0.hpp"
 #include "theme/bntx.hpp"
+#include "defines.hpp"
 #include "minizip_helper.hpp"
 
 #include <minizip/unzip.h>

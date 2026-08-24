@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <tuple>
 
 // DXT 压缩（公有领域 stb_dxt，来自 nothings/stb）。
 #pragma GCC diagnostic push
