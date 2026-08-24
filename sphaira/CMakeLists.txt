@@ -82,6 +82,7 @@ add_executable(sphaira
     source/ui/menus/gc_menu.cpp
     source/ui/menus/game_menu.cpp
     source/ui/menus/game_version_menu.cpp
+    source/ui/menus/cloud_menu.cpp
     source/ui/menus/game_meta_menu.cpp
     source/ui/menus/game_nca_menu.cpp
     source/ui/menus/grid_menu_base.cpp
