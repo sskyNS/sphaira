@@ -1848,6 +1848,17 @@ App::App(const char* argv0) {
         }
         #endif // ENABLE_DEVOPTAB_SMB2
 
+        #ifdef ENABLE_DEVOPTAB_CLOUD
+        {
+            SCOPED_TIMESTAMP("cloud init");
+            devoptab::MountBaiduAll();
+            devoptab::MountGoogleDriveAll();
+            devoptab::MountQuarkAll();
+            devoptab::MountAliyunAll();
+            devoptab::MountGuangyaAll();
+        }
+        #endif // ENABLE_DEVOPTAB_CLOUD
+
         {
             SCOPED_TIMESTAMP("game init");
             devoptab::MountGameAll();

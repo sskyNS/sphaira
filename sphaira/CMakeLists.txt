@@ -22,6 +22,7 @@ option(ENABLE_DEVOPTAB_NFS "" ON)
 option(ENABLE_DEVOPTAB_SMB2 "" ON)
 option(ENABLE_DEVOPTAB_FTP "" ON)
 option(ENABLE_DEVOPTAB_WEBDAV "" ON)
+option(ENABLE_DEVOPTAB_CLOUD "enables cloud disk mounts (baidu/google/quark/aliyun/guangya)" ON)
 # disable by default because we are CPU bound for upload/download.
 # max speed is 8MiB/s, which is fine for wifi, but awful for ethernet.
 # other clients get 36-40MiB/s.
@@ -498,6 +499,18 @@ if (ENABLE_DEVOPTAB_WEBDAV)
     target_compile_definitions(sphaira PRIVATE ENABLE_DEVOPTAB_WEBDAV)
     target_link_libraries(sphaira PRIVATE pugixml)
     target_sources(sphaira PRIVATE source/utils/devoptab_webdav.cpp)
+endif()
+
+if (ENABLE_DEVOPTAB_CLOUD)
+    target_compile_definitions(sphaira PRIVATE ENABLE_DEVOPTAB_CLOUD)
+    target_sources(sphaira PRIVATE
+        source/utils/cloud_disk.cpp
+        source/utils/cloud_baidu.cpp
+        source/utils/cloud_google.cpp
+        source/utils/cloud_quark.cpp
+        source/utils/cloud_aliyun.cpp
+        source/utils/cloud_guangya.cpp
+    )
 endif()
 
 if (ENABLE_AUDIO_MP3)

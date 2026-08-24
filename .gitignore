@@ -30,3 +30,8 @@ usb_*.spec
 
 CMakeUserPresets.json
 build_patreon.sh
+
+# 本地参考/杂物，不纳入版本库
+mediary-scout-main.zip
+网盘参考代码/
+任务清单.txt
