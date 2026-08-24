@@ -131,7 +131,76 @@ struct FenglingDevice final : cloud::CloudDiskDevice {
         return resp.empty() ? -EIO : 0;
     }
 
+    // ---- 上传（存档同步）支持：把写入的数据在 close 时 multipart POST 到 /sync/upload ----
+
+    int devoptab_open(void* fs, const char* path, int flags, int mode) override {
+        auto* f = static_cast<cloud::File*>(fs);
+
+        if (flags & (O_WRONLY | O_RDWR)) {
+            f->path = new std::string(norm_path(path));
+            f->entry = new cloud::CloudEntry();
+            f->write_mode = true;
+            m_upload_buf.clear();
+            m_upload_name = basename(*f->path);
+            m_upload_active = true;
+            return 0;
+        }
+
+        return cloud::CloudDiskDevice::devoptab_open(fs, path, flags, mode);
+    }
+
+    ssize_t devoptab_write(void* fd, const char* ptr, size_t len) override {
+        auto* f = static_cast<cloud::File*>(fd);
+        if (!f->write_mode) {
+            return -EBADF;
+        }
+        m_upload_buf.insert(m_upload_buf.end(), ptr, ptr + len);
+        f->off += len;
+        return (ssize_t)len;
+    }
+
+    int devoptab_close(void* fd) override {
+        auto* f = static_cast<cloud::File*>(fd);
+        if (f->write_mode && m_upload_active) {
+            m_upload_active = false;
+            if (!m_upload_buf.empty()) {
+                upload(m_upload_name, m_upload_buf);
+            }
+        }
+        return cloud::CloudDiskDevice::devoptab_close(fd);
+    }
+
 private:
+    static std::string basename(const std::string& path) {
+        const auto pos = path.find_last_of('/');
+        return pos == std::string::npos ? path : path.substr(pos + 1);
+    }
+
+    bool upload(const std::string& name, const std::vector<u8>& data) {
+        curl_mime* mime = curl_mime_init(nullptr);
+        if (!mime) {
+            return false;
+        }
+
+        curl_mimepart* part = curl_mime_addpart(mime);
+        curl_mime_name(part, "file");
+        curl_mime_filename(part, name.c_str());
+        curl_mime_data(part, (const char*)data.data(), data.size());
+
+        curl_slist* h = headers();
+        h = curl_slist_append(h, "X-Sync-Source: Switch-Overlay-Public");
+
+        const std::string url = std::string(BASE_URL) + "/sync/upload";
+        curl_set_common_options(this->curl, url);
+        curl_easy_setopt(this->curl, CURLOPT_MIMEPOST, mime);
+        curl_easy_setopt(this->curl, CURLOPT_HTTPHEADER, h);
+
+        const auto res = curl_easy_perform(this->curl);
+        curl_mime_free(mime);
+        curl_slist_free_all(h);
+        return res == CURLE_OK;
+    }
+
     curl_slist* headers() {
         curl_slist* h = nullptr;
         if (!m_serial.empty()) {
@@ -144,6 +213,10 @@ private:
 
     std::string m_serial{};
     std::string m_nickname{};
+
+    std::vector<u8> m_upload_buf{};
+    std::string m_upload_name{};
+    bool m_upload_active{};
 };
 
 } // namespace
