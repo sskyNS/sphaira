@@ -7,6 +7,7 @@
 #include <string>
 #include <type_traits>
 #include <memory>
+#include <switch.h>
 #include "theme/buffer.hpp"
 
 namespace sphaira::theme {

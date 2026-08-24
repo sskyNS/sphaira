@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <switch.h>
 #include "theme/buffer.hpp"
 
 namespace sphaira::theme {
