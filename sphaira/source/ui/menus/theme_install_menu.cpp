@@ -123,12 +123,19 @@ void Menu::Install() {
 
     const std::string title_id = theme::ThemeTargetInfo::TitleIdToString(target->TitleId);
 
-    // 基础 szs 来自系统主题 dump：/themes/sphaira/dump/{TitleId}/lyt/xxx.szs
-    fs::FsPath base_path = std::string(DUMP_DIR) + "/" + title_id + target->SzsFile;
+    // 基础 szs 优先从 NXThemes Installer 的 /themes/systemData 读取（无需 prod.keys），
+    // 其次回退到本工具自己的 dump 目录 /themes/sphaira/dump。
+    const char* szs_name = std::strrchr(target->SzsFile.c_str(), '/');
+    szs_name = szs_name ? szs_name + 1 : target->SzsFile.c_str();
+
+    fs::FsPath base_path = std::string("/themes/systemData/") + title_id + "/" + szs_name;
+    if (!fs::FileExists(base_path)) {
+        base_path = std::string(DUMP_DIR) + "/" + title_id + target->SzsFile;
+    }
 
     std::vector<u8> base_szs;
     if (R_FAILED(fs::FsNativeSd().read_entire_file(base_path, base_szs))) {
-        App::Notify("Base theme dump not found at " + std::string(base_path.s));
+        App::Notify("基础主题缺失：请先用 NXThemes Installer 生成 /themes/systemData/" + title_id + "/" + szs_name + "（或按 Y dump）");
         return;
     }
 

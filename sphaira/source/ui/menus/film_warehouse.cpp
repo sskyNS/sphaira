@@ -342,6 +342,95 @@ bool PanSouSearch(const std::string& keyword, std::vector<SearchResult>& out) {
     return !out.empty();
 }
 
+struct AiConfig {
+    std::string base_url;
+    std::string api_key;
+    std::string model;
+
+    auto valid() const -> bool {
+        return !base_url.empty() && !model.empty();
+    }
+};
+
+AiConfig ReadAiConfig() {
+    AiConfig cfg;
+    char buf[512]{};
+    ini_gets("ai", "base_url", "", buf, sizeof(buf), PLAYER_INI);
+    cfg.base_url = buf;
+    ini_gets("ai", "api_key", "", buf, sizeof(buf), PLAYER_INI);
+    cfg.api_key = buf;
+    ini_gets("ai", "model", "", buf, sizeof(buf), PLAYER_INI);
+    cfg.model = buf;
+    return cfg;
+}
+
+bool HttpPostJsonAuth(const std::string& url, const std::string& body, const std::string& api_key, std::string& out) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return false;
+    }
+
+    curl_slist* h = curl_slist_append(nullptr, "Content-Type: application/json");
+    if (!api_key.empty()) {
+        h = curl_slist_append(h, ("Authorization: Bearer " + api_key).c_str());
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SearchWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+
+    const auto rc = curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+    return rc == CURLE_OK && !out.empty();
+}
+
+// 调用 OpenAI 兼容的 chat completions，返回 assistant 文本。
+bool LlmChat(const AiConfig& cfg, const std::string& system, const std::string& user, std::string& out) {
+    std::string url = cfg.base_url;
+    while (!url.empty() && url.back() == '/') {
+        url.pop_back();
+    }
+    url += "/chat/completions";
+
+    std::string body = "{\"model\":" + JsonStr(cfg.model) + ",\"messages\":[";
+    body += "{\"role\":\"system\",\"content\":" + JsonStr(system) + "},";
+    body += "{\"role\":\"user\",\"content\":" + JsonStr(user) + "}";
+    body += "]}";
+
+    std::string resp;
+    if (!HttpPostJsonAuth(url, body, cfg.api_key, resp)) {
+        return false;
+    }
+
+    yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+    if (!doc) {
+        return false;
+    }
+    ON_SCOPE_EXIT(yyjson_doc_free(doc));
+
+    const auto root = yyjson_doc_get_root(doc);
+    const auto choices = root ? yyjson_obj_get(root, "choices") : nullptr;
+    if (!choices || !yyjson_is_arr(choices)) {
+        return false;
+    }
+    const auto first = yyjson_arr_get_first(choices);
+    const auto message = first ? yyjson_obj_get(first, "message") : nullptr;
+    const auto content = message ? yyjson_obj_get(message, "content") : nullptr;
+    if (!content || !yyjson_is_str(content)) {
+        return false;
+    }
+    out = yyjson_get_str(content);
+    return !out.empty();
+}
+
 bool TmdbSearch(const std::string& api_key, const std::string& title, const std::string& year,
                 const std::string& kind, std::string& out_poster_url, std::string& out_year) {
     std::string url = "https://api.themoviedb.org/3/search/";
@@ -669,18 +758,30 @@ void Menu::Play() {
 }
 
 void Menu::Search() {
-    std::string keyword;
-    if (R_FAILED(swkbd::ShowText(keyword, "影视搜索", "输入片名 / 关键词", nullptr, -1, 128))) {
+    std::string query;
+    if (R_FAILED(swkbd::ShowText(query, "AI 搜索", "输入片名或自然语言描述", nullptr, -1, 128))) {
         return;
     }
-    if (keyword.empty()) {
+    if (query.empty()) {
         return;
     }
 
     auto results = std::make_shared<std::vector<SearchResult>>();
 
-    App::Push<ProgressBox>(0, "搜索资源", keyword,
-        [results, keyword](sphaira::ui::ProgressBox* pbox) -> Result {
+    App::Push<ProgressBox>(0, "搜索资源", query,
+        [results, query](sphaira::ui::ProgressBox* pbox) -> Result {
+            std::string keyword = query;
+
+            // 若配置了 AI，先用 LLM 从自然语言里提取片名，再搜索。
+            const auto ai = ReadAiConfig();
+            if (ai.valid()) {
+                std::string title;
+                if (LlmChat(ai, "你是影视搜索助手。请从用户的请求中提取影视片名，只返回片名本身，不要任何解释、标点或引号。", query, title) && !title.empty()) {
+                    keyword = title;
+                    pbox->SetTitle("已识别片名：" + title);
+                }
+            }
+
             PanSouSearch(keyword, *results);
             return 0;
         },
