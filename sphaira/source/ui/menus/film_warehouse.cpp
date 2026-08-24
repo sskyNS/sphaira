@@ -4,14 +4,18 @@
 #include "defines.hpp"
 #include "download.hpp"
 #include "location.hpp"
+#include "nro.hpp"
+#include "swkbd.hpp"
 
 #include "ui/menus/film_warehouse.hpp"
 #include "ui/menus/filebrowser.hpp"
 #include "ui/nvg_util.hpp"
 #include "ui/progress_box.hpp"
+#include "ui/popup_list.hpp"
 
 #include <minIni.h>
 #include <yyjson.h>
+#include <curl/curl.h>
 
 #include <algorithm>
 #include <cctype>
@@ -29,6 +33,9 @@ namespace {
 constexpr const char* LIBRARY_PATH = "/switch/sphaira/library.json";
 constexpr const char* POSTER_DIR = "/switch/sphaira/posters";
 constexpr const char* TMDB_INI = "/config/sphaira/tmdb.ini";
+constexpr const char* PLAYER_INI = "/config/sphaira/film_warehouse.ini";
+constexpr const char* PLAYER_DEFAULT = "/switch/nxmp/nxmp.nro";
+constexpr const char* PANSOU_URL = "https://so.252035.xyz/api/search";
 
 constexpr u32 kMaxDepth = 6;
 constexpr u32 kMaxEntries = 10000;
@@ -225,6 +232,116 @@ std::string ReadTmdbKey() {
     return std::string{buf};
 }
 
+std::string ReadPlayerPath() {
+    char buf[512]{};
+    ini_gets("player", "path", PLAYER_DEFAULT, buf, sizeof(buf), PLAYER_INI);
+    return std::string{buf};
+}
+
+// 前向声明：GetStr / JsonStr 定义在文件靠后位置，但搜索逻辑需要提前用到。
+std::string GetStr(yyjson_val* obj, const char* key);
+std::string JsonStr(const std::string& s);
+
+struct SearchResult {
+    std::string title;
+    std::string source;
+    std::string type;
+    std::string url;
+    std::string password;
+};
+
+size_t SearchWriteCb(char* p, size_t s, size_t n, void* u) {
+    auto* out = static_cast<std::string*>(u);
+    out->append(p, s * n);
+    return s * n;
+}
+
+bool HttpPostJson(const std::string& url, const std::string& body, std::string& out) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return false;
+    }
+
+    curl_slist* h = curl_slist_append(nullptr, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SearchWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+
+    const auto rc = curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+    return rc == CURLE_OK && !out.empty();
+}
+
+// 调用 PanSou 资源搜索接口，返回去重后的资源链接。
+bool PanSouSearch(const std::string& keyword, std::vector<SearchResult>& out) {
+    out.clear();
+
+    std::string resp;
+    const std::string body = "{\"kw\":" + JsonStr(keyword) + ",\"res\":\"all\"}";
+    if (!HttpPostJson(PANSOU_URL, body, resp)) {
+        return false;
+    }
+
+    yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+    if (!doc) {
+        return false;
+    }
+    ON_SCOPE_EXIT(yyjson_doc_free(doc));
+
+    const auto root = yyjson_doc_get_root(doc);
+    if (!root || !yyjson_is_obj(root)) {
+        return false;
+    }
+
+    const auto code = yyjson_obj_get(root, "code");
+    if (!code || !yyjson_is_int(code) || yyjson_get_int(code) != 0) {
+        return false;
+    }
+
+    const auto data = yyjson_obj_get(root, "data");
+    const auto results = data ? yyjson_obj_get(data, "results") : nullptr;
+    if (!results || !yyjson_is_arr(results)) {
+        return false;
+    }
+
+    size_t idx{}, max{};
+    yyjson_val* item{};
+    yyjson_arr_foreach(results, idx, max, item) {
+        const std::string title = GetStr(item, "title");
+        const std::string source = GetStr(item, "channel");
+
+        const auto links = yyjson_obj_get(item, "links");
+        if (!links || !yyjson_is_arr(links)) {
+            continue;
+        }
+
+        size_t li{}, lm{};
+        yyjson_val* link{};
+        yyjson_arr_foreach(links, li, lm, link) {
+            SearchResult r;
+            r.title = title;
+            r.source = source;
+            r.type = GetStr(link, "type");
+            r.url = GetStr(link, "url");
+            r.password = GetStr(link, "password");
+            if (r.url.empty()) {
+                continue;
+            }
+            out.push_back(std::move(r));
+        }
+    }
+
+    return !out.empty();
+}
+
 bool TmdbSearch(const std::string& api_key, const std::string& title, const std::string& year,
                 const std::string& kind, std::string& out_poster_url, std::string& out_year) {
     std::string url = "https://api.themoviedb.org/3/search/";
@@ -332,9 +449,11 @@ std::string JsonStr(const std::string& s) {
 Menu::Menu(u32 flags) : grid::Menu{"影视仓", flags} {
     this->SetActions(
         std::make_pair(Button::B, Action{"返回", [this](){ SetPop(); }}),
-        std::make_pair(Button::A, Action{"打开", [this](){ OpenEntry(); }}),
+        std::make_pair(Button::A, Action{"播放", [this](){ Play(); }}),
         std::make_pair(Button::X, Action{"扫描入库", [this](){ StartScan(); }}),
-        std::make_pair(Button::Y, Action{"清空媒体库", [this](){ ClearLibrary(); }})
+        std::make_pair(Button::Y, Action{"清空媒体库", [this](){ ClearLibrary(); }}),
+        std::make_pair(Button::L2, Action{"打开目录", [this](){ OpenEntry(); }}),
+        std::make_pair(Button::R2, Action{"搜索", [this](){ Search(); }})
     );
 
     LoadLibrary();
@@ -501,6 +620,95 @@ void Menu::OpenEntry() {
     };
     const fs::FsPath start = parent.empty() ? fs::FsPath{"/"} : fs::FsPath{parent};
     App::Push<filebrowser::Menu>(fs, fs_entry, start, filebrowser::FsOption_All);
+}
+
+void Menu::Play() {
+    if (m_index >= m_entries.size()) {
+        return;
+    }
+    const auto& e = m_entries[m_index];
+
+    const std::string player = ReadPlayerPath();
+    if (!fs::FileExists(fs::FsPath{player})) {
+        App::Notify("未找到播放器 NXMP，请安装到 /switch/nxmp/nxmp.nro，或修改 /config/sphaira/film_warehouse.ini");
+        return;
+    }
+
+    // SD 卡文件：直接交给外部播放器（NXMP）。
+    if (e.mount.empty()) {
+        const auto rc = nro_launch(player, nro_add_arg_file(e.path));
+        if (R_FAILED(rc)) {
+            App::Notify("启动播放器失败");
+        }
+        return;
+    }
+
+    // 网盘文件：播放器进程无法访问 sphaira 的挂载点，先下载到 SD 缓存再播放。
+    const fs::FsPath src{e.path};
+    const fs::FsPath dst = std::string("/switch/sphaira/cache/play/") + e.filename;
+    auto cloud_fs = std::make_shared<fs::FsStdio>(true, fs::FsPath{e.mount});
+
+    App::Push<ProgressBox>(0, "下载并播放", e.filename,
+        [cloud_fs, src, dst](sphaira::ui::ProgressBox* pbox) -> Result {
+            fs::FsNativeSd sd;
+            sd.CreateDirectoryRecursively("/switch/sphaira/cache/play");
+            // 单线程拷贝：网盘 devoptab 读取是有状态的，不能并发读同一句柄。
+            return pbox->CopyFile(cloud_fs.get(), &sd, src, dst, true);
+        },
+        [player, dst](Result rc) {
+            if (R_FAILED(rc)) {
+                App::Notify("下载失败，无法播放");
+                return;
+            }
+            const auto rc2 = nro_launch(player, nro_add_arg_file(dst.toString()));
+            if (R_FAILED(rc2)) {
+                App::Notify("启动播放器失败");
+            }
+        }
+    );
+}
+
+void Menu::Search() {
+    std::string keyword;
+    if (R_FAILED(swkbd::ShowText(keyword, "影视搜索", "输入片名 / 关键词", nullptr, -1, 128))) {
+        return;
+    }
+    if (keyword.empty()) {
+        return;
+    }
+
+    auto results = std::make_shared<std::vector<SearchResult>>();
+
+    App::Push<ProgressBox>(0, "搜索资源", keyword,
+        [results, keyword](sphaira::ui::ProgressBox* pbox) -> Result {
+            PanSouSearch(keyword, *results);
+            return 0;
+        },
+        [results](Result rc) {
+            if (results->empty()) {
+                App::Notify("未找到资源");
+                return;
+            }
+
+            PopupList::Items items;
+            items.reserve(results->size());
+            for (const auto& r : *results) {
+                items.emplace_back(r.title + "  [" + r.type + "]  " + r.source);
+            }
+
+            App::Push<PopupList>("搜索结果", items, [results](std::optional<s64> index) {
+                if (!index.has_value()) {
+                    return;
+                }
+                const auto& r = (*results)[*index];
+                std::string msg = "链接: " + r.url;
+                if (!r.password.empty()) {
+                    msg += "  密码: " + r.password;
+                }
+                App::Notify(msg);
+            });
+        }
+    );
 }
 
 std::vector<MediaEntry> Menu::DoScan(sphaira::ui::ProgressBox* pbox) {

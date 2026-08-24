@@ -82,7 +82,7 @@ bool DumpTitle(NcmContentStorage& cs, NcmContentMetaDatabase& db, u64 title_id, 
     // 挂载 Program NCA。
     fs::FsPath root;
     if (R_FAILED(devoptab::MountNcaNcm(&cs, &program->content_id, root))) {
-        error = "Failed to mount NCA for " + ThemeTargetInfo::TitleIdToString(title_id);
+        error = "Failed to mount NCA " + ThemeTargetInfo::TitleIdToString(title_id) + "（请确认 /switch/prod.keys 内容完整且包含所需 header_key/titlekek）";
         return false;
     }
     ON_SCOPE_EXIT(devoptab::UmountNeworkDevice(root));
@@ -116,6 +116,12 @@ bool DumpTitle(NcmContentStorage& cs, NcmContentMetaDatabase& db, u64 title_id, 
 } // namespace
 
 bool DumpSystemThemes(std::string& error) {
+    // 解包系统主题的 Program NCA 需要 prod.keys 解密 NCA 头与 RomFS。
+    if (!fs::FileExists(fs::FsPath{"/switch/prod.keys"})) {
+        error = "缺少 prod.keys：请把 prod.keys 放到 /switch/prod.keys 后再按 Y 重新 dump";
+        return false;
+    }
+
     NcmContentStorage cs{};
     NcmContentMetaDatabase db{};
 

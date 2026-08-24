@@ -3,6 +3,7 @@
 
 #include "defines.hpp"
 #include "i18n.hpp"
+#include "image.hpp"
 #include "title_info.hpp"
 
 #include "ui/menus/game_version_menu.hpp"
@@ -42,10 +43,16 @@ Menu::Menu(u32 flags) : grid::Menu{"Versions"_i18n, flags} {
     title::Init();
     Scan();
 
-    grid::Menu::OnLayoutChange(m_list, grid::LayoutType_List);
+    grid::Menu::OnLayoutChange(m_list, grid::LayoutType_GridDetail);
 }
 
 Menu::~Menu() {
+    for (auto& e : m_entries) {
+        if (e.image) {
+            nvgDeleteImage(App::GetVg(), e.image);
+        }
+    }
+
     title::Exit();
     ns::Exit();
 }
@@ -107,9 +114,10 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
         return;
     }
 
+    int image_load_count = 0;
     int version_load_count = 0;
 
-    m_list->Draw(vg, theme, m_entries.size(), [this, &version_load_count](auto* vg, auto* theme, auto v, auto pos) {
+    m_list->Draw(vg, theme, m_entries.size(), [this, &image_load_count, &version_load_count](auto* vg, auto* theme, auto v, auto pos) {
         auto& e = m_entries[pos];
 
         if (e.status == title::NacpLoadStatus::None) {
@@ -120,6 +128,15 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
                 e.status = result->status;
                 if (e.status == title::NacpLoadStatus::Loaded) {
                     e.lang = result->lang;
+
+                    // 懒加载图标，每帧最多 2 个，避免 IO/GPU 卡顿。
+                    if (image_load_count < 2 && !e.image && !result->icon.empty()) {
+                        const auto image = ImageLoadFromMemory(result->icon, ImageFlag_JPEG);
+                        if (!image.data.empty()) {
+                            e.image = nvgCreateImageRGBA(vg, image.w, image.h, 0, image.data.data());
+                            image_load_count++;
+                        }
+                    }
                 }
             }
         }
@@ -140,7 +157,7 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
         const std::string version_str = e.version_loaded ? FormatVersion(e.version) : "...";
         const auto selected = pos == m_index;
 
-        DrawEntryNoImage(vg, theme, grid::LayoutType_List, v, selected, e.GetName(), "", version_str.c_str());
+        DrawEntry(vg, theme, grid::LayoutType_GridDetail, v, selected, e.image, e.GetName(), e.GetAuthor(), version_str.c_str());
     });
 }
 

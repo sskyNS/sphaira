@@ -5,9 +5,24 @@
 #include "log.hpp"
 
 #include <cstring>
+#include <initializer_list>
+#include <unordered_map>
 
 namespace sphaira::devoptab {
 namespace {
+
+// 大小写不敏感地从 ini 的 extra 键值里查找（兼容 AppKey/SecretKey/SignKey 等写法）。
+std::string FindExtraCI(const std::unordered_map<std::string, std::string>& extra, std::initializer_list<const char*> keys) {
+    for (const char* key : keys) {
+        const size_t n = std::strlen(key);
+        for (const auto& [k, v] : extra) {
+            if (k.size() == n && !strncasecmp(k.c_str(), key, n)) {
+                return v;
+            }
+        }
+    }
+    return {};
+}
 
 // 百度网盘 PCS 开放平台 API。
 // 鉴权：OAuth2（client_id / client_secret / refresh_token -> access_token）。
@@ -18,10 +33,11 @@ struct BaiduDevice final : cloud::CloudDiskDevice {
     static constexpr const char* OAUTH_TOKEN = "https://openapi.baidu.com/oauth/2.0/token";
 
     BaiduDevice(const common::MountConfig& config) : CloudDiskDevice(config) {
-        m_access_token = config_extra("access_token");
-        m_refresh_token = config_extra("refresh_token");
-        m_client_id = config_extra("client_id");
-        m_client_secret = config_extra("client_secret");
+        m_access_token = FindExtraCI(config.extra, {"access_token"});
+        m_refresh_token = FindExtraCI(config.extra, {"refresh_token"});
+        m_client_id = FindExtraCI(config.extra, {"client_id", "app_key", "appkey"});
+        m_client_secret = FindExtraCI(config.extra, {"client_secret", "secret_key", "secretkey"});
+        m_sign_key = FindExtraCI(config.extra, {"sign_key", "signkey"});
     }
 
     bool auth() override {
@@ -185,6 +201,7 @@ private:
     std::string m_refresh_token{};
     std::string m_client_id{};
     std::string m_client_secret{};
+    std::string m_sign_key{};
 };
 
 } // namespace

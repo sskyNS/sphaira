@@ -31,6 +31,7 @@ private:
     void Login();
     void EditConfig();
     void TestConnection();
+    void OfflineDownload();
     void OpenFileBrowser();
     void StartDeviceCodeLogin();
     void PollDeviceCodeLogin();

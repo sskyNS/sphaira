@@ -236,6 +236,156 @@ std::string ReadIniKey(const char* ini_path, const char* key) {
     return {};
 }
 
+// ---- 夸克扫码登录辅助 ----
+std::string HttpGetQuark(const std::string& url) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return {};
+    }
+    std::string resp;
+    curl_slist* h = nullptr;
+    h = curl_slist_append(h, "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36");
+    h = curl_slist_append(h, "Referer: https://pan.quark.cn/");
+    h = curl_slist_append(h, "Accept: application/json, text/plain, */*");
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+    return resp;
+}
+
+// 用 service_ticket 到 pan.quark.cn 兑换网盘 cookie。
+std::string QuarkExchangeCookie(const std::string& ticket) {
+    static const char* KEYS[] = {"__pus", "__uid", "__kps", "__ktd", "__puus", "_UP_A4A_11_", "_UP_D_"};
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return {};
+    }
+
+    curl_easy_setopt(curl, CURLOPT_COOKIEFILE, ""); // 启用 cookie 引擎
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 8L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    curl_slist* h = nullptr;
+    h = curl_slist_append(h, "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36");
+    h = curl_slist_append(h, "Referer: https://pan.quark.cn/");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+
+    const std::string url = "https://pan.quark.cn/account/info?st=" + UrlEncode(ticket) + "&fr=pc&platform=pc";
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+
+    const auto rc = curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    if (rc != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        return {};
+    }
+
+    struct curl_slist* cookies = nullptr;
+    const auto info_rc = curl_easy_getinfo(curl, CURLINFO_COOKIELIST, &cookies);
+    curl_easy_cleanup(curl);
+    if (info_rc != CURLE_OK || !cookies) {
+        return {};
+    }
+
+    std::string out;
+    for (auto* c = cookies; c; c = c->next) {
+        std::string line(c->data);
+        // 格式：domain\tflag\tpath\tsecure\texpiry\tname\tvalue（name 是倒数第二个字段）。
+        size_t pos = 0;
+        for (int i = 0; i < 5; i++) {
+            pos = line.find('\t', pos);
+            if (pos == std::string::npos) {
+                break;
+            }
+            pos++;
+        }
+        if (pos == std::string::npos) {
+            continue;
+        }
+
+        std::string rest = line.substr(pos);
+        if (rest.rfind("#HttpOnly_", 0) == 0) {
+            rest = rest.substr(10);
+        }
+        const auto tab = rest.find('\t');
+        if (tab == std::string::npos) {
+            continue;
+        }
+        const std::string key = rest.substr(0, tab);
+        std::string value = rest.substr(tab + 1);
+        while (!value.empty() && (value.back() == '\r' || value.back() == '\n')) {
+            value.pop_back();
+        }
+
+        for (const char* k : KEYS) {
+            if (key == k) {
+                if (!out.empty()) {
+                    out += "; ";
+                }
+                out += key + "=" + value;
+                break;
+            }
+        }
+    }
+    curl_slist_free_all(cookies);
+    return out;
+}
+
+// 光鸭云盘磁力/ed2k 离线下载（转存）。返回是否成功提交任务。
+bool GuangyaOfflineDownload(const std::string& url) {
+    const std::string token = ReadIniKey("/config/sphaira/mount/guangya.ini", "access_token");
+    if (token.empty()) {
+        return false;
+    }
+
+    const std::string body = "{\"url\":\"" + url + "\",\"parentId\":\"\",\"newName\":\"\"}";
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return false;
+    }
+    std::string resp;
+    curl_slist* h = nullptr;
+    h = curl_slist_append(h, "Content-Type: application/json");
+    h = curl_slist_append(h, ("Authorization: Bearer " + token).c_str());
+    h = curl_slist_append(h, "Dt: 4");
+    h = curl_slist_append(h, "origin: https://www.guangyapan.com");
+    h = curl_slist_append(h, "referer: https://www.guangyapan.com/");
+
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.guangyapan.com/cloudcollection/v1/create_task");
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+
+    devcloud::Json j(resp);
+    if (!j) {
+        return false;
+    }
+    const std::string msg = devcloud::js_str(j.get(), "msg", "");
+    return msg.empty() || msg == "success";
+}
+
 } // namespace
 
 Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
@@ -245,7 +395,8 @@ Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
         std::make_pair(Button::Y, Action{"扫码登录", [this](){ StartDeviceCodeLogin(); }}),
         std::make_pair(Button::X, Action{"打开网盘", [this](){ OpenFileBrowser(); }}),
         std::make_pair(Button::L2, Action{"编辑配置", [this](){ EditConfig(); }}),
-        std::make_pair(Button::R2, Action{"测试连接", [this](){ TestConnection(); }})
+        std::make_pair(Button::R2, Action{"测试连接", [this](){ TestConnection(); }}),
+        std::make_pair(Button::R3, Action{"离线下载", [this](){ OfflineDownload(); }})
     );
 
     for (const auto& p : PROVIDERS) {
@@ -408,6 +559,34 @@ void Menu::TestConnection() {
     App::Notify("未挂载，请先登录配置并重启 Sphaira");
 }
 
+void Menu::OfflineDownload() {
+    if (m_index >= m_entries.size()) {
+        return;
+    }
+
+    const auto& p = m_entries[m_index];
+
+    // 目前仅光鸭支持磁力/ed2k 离线下载（转存）。
+    if (std::strcmp(p.section, "GUANGYA")) {
+        App::Notify("当前网盘暂不支持离线下载（已支持：光鸭云盘）");
+        return;
+    }
+
+    std::string url;
+    if (R_FAILED(swkbd::ShowText(url, "离线下载", "粘贴 magnet / ed2k 链接", nullptr, -1, 4096))) {
+        return;
+    }
+    if (url.empty()) {
+        return;
+    }
+
+    if (GuangyaOfflineDownload(url)) {
+        App::Notify("已提交离线下载任务，请到光鸭网盘查看");
+    } else {
+        App::Notify("离线下载提交失败，请检查是否已登录光鸭");
+    }
+}
+
 void Menu::OpenFileBrowser() {
     if (m_index >= m_entries.size()) {
         return;
@@ -546,6 +725,18 @@ void Menu::StartDeviceCodeLogin() {
             return;
         }
         m_login_type = "baidu";
+    } else if (sec == "QUARK") {
+        const std::string url = "https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=532&v=1.2&request_id=" + std::to_string(NowMs()) + "&uc_param_str=";
+        const auto resp = HttpGetQuark(url);
+        devcloud::Json j(resp);
+        auto* members = devcloud::js_get(devcloud::js_get(j.get(), "data"), "members");
+        m_login_code = devcloud::js_str(members, "token", "");
+        if (m_login_code.empty()) {
+            App::Notify("生成二维码失败");
+            return;
+        }
+        m_login_url = "https://su.quark.cn/4_eMHBJ?token=" + UrlEncode(m_login_code) + "&client_id=532&v=1.2&uc_param_str=";
+        m_login_type = "quark";
     } else {
         App::Notify("当前网盘暂不支持扫码登录，请用粘贴凭证");
         return;
@@ -641,6 +832,45 @@ void Menu::PollDeviceCodeLogin() {
             App::Notify("登录码已过期，请重试");
         }
         // authorization_pending：继续轮询。
+        return;
+    }
+
+    // 夸克二维码轮询。
+    if (m_login_type == "quark") {
+        const std::string url = "https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?client_id=532&v=1.2&request_id=" + std::to_string(NowMs()) + "&token=" + UrlEncode(m_login_code) + "&uc_param_str=";
+        const auto resp = HttpGetQuark(url);
+        devcloud::Json j(resp);
+        auto* members = devcloud::js_get(devcloud::js_get(j.get(), "data"), "members");
+        const std::string ticket = devcloud::js_str(members, "service_ticket", "");
+
+        if (!ticket.empty()) {
+            const std::string cookie = QuarkExchangeCookie(ticket);
+            if (cookie.empty()) {
+                m_login_active = false;
+                ClearQr();
+                this->SetSubHeading("");
+                App::Notify("兑换 cookie 失败，请重试");
+                return;
+            }
+            fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
+            ini_puts("QUARK", "url", "https://example.com", "/config/sphaira/mount/quark.ini");
+            ini_puts("QUARK", "cookie", cookie.c_str(), "/config/sphaira/mount/quark.ini");
+            m_login_active = false;
+            ClearQr();
+            this->SetSubHeading("");
+            RefreshStatus();
+            App::Notify("夸克登录成功，重启后生效");
+            return;
+        }
+
+        const std::string msg = devcloud::js_str(j.get(), "message", "");
+        if (msg.find("expire") != std::string::npos || msg.find("invalid") != std::string::npos ||
+            msg.find("过期") != std::string::npos || msg.find("失效") != std::string::npos) {
+            m_login_active = false;
+            ClearQr();
+            this->SetSubHeading("");
+            App::Notify("二维码已过期，请重试");
+        }
         return;
     }
 

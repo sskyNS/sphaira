@@ -60,9 +60,7 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
         std::string body = "{\"parentId\":\"" + pid + "\"";
         body += ",\"page\":0,\"pageSize\":100,\"orderBy\":3,\"sortType\":1,\"fileTypes\":[]}";
 
-        curl_slist* h = base_headers(true);
-        ON_SCOPE_EXIT(curl_slist_free_all(h));
-        const auto resp = http_post(std::string(API_BASE) + "/userres/v1/file/get_file_list", body, h);
+        const auto resp = do_api_post("/userres/v1/file/get_file_list", body);
 
         cloud::Json j(resp);
         if (!j) {
@@ -119,9 +117,7 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
 
         const std::string body = "{\"fileId\":\"" + e.id + "\"}";
 
-        curl_slist* h = base_headers(true);
-        ON_SCOPE_EXIT(curl_slist_free_all(h));
-        const auto resp = http_post(std::string(API_BASE) + "/userres/v1/get_res_download_url", body, h);
+        const auto resp = do_api_post("/userres/v1/get_res_download_url", body);
 
         cloud::Json j(resp);
         if (!j) {
@@ -210,6 +206,24 @@ private:
         parent[16] = 0;
         std::snprintf(buf, sizeof(buf), "00-%s-%s-01", trace, parent);
         return std::string(buf);
+    }
+
+    // POST 到 API 主机；若 access_token 过期（401）则用 refresh_token 刷新一次并重试。
+    std::string do_api_post(const std::string& path, const std::string& body) {
+        curl_slist* h = base_headers(true);
+        std::string resp = http_post(std::string(API_BASE) + path, body, h);
+        curl_slist_free_all(h);
+
+        if (m_last_http_code == 401) {
+            log_write("[GUANGYA] %s 返回 401，尝试刷新 token\n", path.c_str());
+            m_access_token.clear();
+            if (auth()) {
+                h = base_headers(true);
+                resp = http_post(std::string(API_BASE) + path, body, h);
+                curl_slist_free_all(h);
+            }
+        }
+        return resp;
     }
 
     curl_slist* base_headers(bool with_auth) {

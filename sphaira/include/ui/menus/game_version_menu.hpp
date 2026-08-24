@@ -15,10 +15,15 @@ struct Entry {
     NacpLanguageEntry lang{};
     u32 version{};
     bool version_loaded{};
+    int image{};
     title::NacpLoadStatus status{title::NacpLoadStatus::None};
 
     auto GetName() const -> const char* {
         return lang.name;
+    }
+
+    auto GetAuthor() const -> const char* {
+        return lang.author;
     }
 };
 

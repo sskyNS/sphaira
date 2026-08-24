@@ -701,9 +701,17 @@ void FsView::OnClick() {
         } else if (IsExtension(entry.GetExtension(), NCA_EXTENSIONS)) {
             MountFileFs(devoptab::MountNca, devoptab::UmountNeworkDevice);
         } else if (IsExtension(entry.GetExtension(), NSP_EXTENSIONS)) {
-            MountFileFs(devoptab::MountNsp, devoptab::UmountNeworkDevice);
+            if (IsSd()) {
+                MountFileFs(devoptab::MountNsp, devoptab::UmountNeworkDevice);
+            } else {
+                InstallFiles(); // 网络目录：直接在线安装 NSP/NSZ。
+            }
         } else if (IsExtension(entry.GetExtension(), XCI_EXTENSIONS)) {
-            MountFileFs(devoptab::MountXci, devoptab::UmountNeworkDevice);
+            if (IsSd()) {
+                MountFileFs(devoptab::MountXci, devoptab::UmountNeworkDevice);
+            } else {
+                InstallFiles(); // 网络目录：直接在线安装 XCI/XCZ。
+            }
         } else if (IsExtension(entry.GetExtension(), "zip")) {
             MountFileFs(devoptab::MountZip, devoptab::UmountNeworkDevice);
         } else if (IsExtension(entry.GetExtension(), "bfsar")) {
