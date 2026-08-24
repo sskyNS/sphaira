@@ -56,8 +56,9 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
         }
 
         const std::string pid = parent_id(path);
+        // 与光鸭官方客户端一致：orderBy=3、sortType=1，且必须携带 fileTypes。
         std::string body = "{\"parentId\":\"" + pid + "\"";
-        body += ",\"page\":0,\"pageSize\":100,\"orderBy\":0,\"sortType\":0}";
+        body += ",\"page\":0,\"pageSize\":100,\"orderBy\":3,\"sortType\":1,\"fileTypes\":[]}";
 
         curl_slist* h = base_headers(true);
         ON_SCOPE_EXIT(curl_slist_free_all(h));
@@ -68,7 +69,14 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
             return -EIO;
         }
 
+        // 成功信号：msg 为空或 "success"；否则 data 为 null，记录错误便于排查。
+        const std::string msg = cloud::js_str(j.get(), "msg", "");
         auto data = cloud::js_get(j.get(), "data");
+        if (!data && !msg.empty()) {
+            log_write("[GUANGYA] get_file_list failed: %s\n", msg.c_str());
+            return -EIO;
+        }
+
         yyjson_val* arr = nullptr;
         if (data && yyjson_is_arr(data)) {
             arr = data;
@@ -150,7 +158,7 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
 
         curl_slist* h = base_headers(true);
         ON_SCOPE_EXIT(curl_slist_free_all(h));
-        const auto resp = http_post(std::string(API_BASE) + "/userres/v1/file/create_dir", body, h);
+        const auto resp = http_post(std::string(API_BASE) + "/nd.bizuserres.s/v1/file/create_dir", body, h);
         return resp.empty() ? -EIO : 0;
     }
 
@@ -168,7 +176,7 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
 
         curl_slist* h = base_headers(true);
         ON_SCOPE_EXIT(curl_slist_free_all(h));
-        const auto resp = http_post(std::string(API_BASE) + "/userres/v1/file/delete_file", body, h);
+        const auto resp = http_post(std::string(API_BASE) + "/nd.bizuserres.s/v1/file/delete_file", body, h);
         return resp.empty() ? -EIO : 0;
     }
 

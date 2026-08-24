@@ -13,6 +13,7 @@
 
 #include "ui/menus/cloud_menu.hpp"
 #include "ui/menus/filebrowser.hpp"
+#include "ui/menus/file_viewer.hpp"
 #include "ui/nvg_util.hpp"
 
 #include <minIni.h>
@@ -242,7 +243,9 @@ Menu::Menu(u32 flags) : grid::Menu{"网盘浏览器", flags} {
         std::make_pair(Button::B, Action{"返回", [this](){ SetPop(); }}),
         std::make_pair(Button::A, Action{"登录 / 粘贴凭证", [this](){ Login(); }}),
         std::make_pair(Button::Y, Action{"扫码登录", [this](){ StartDeviceCodeLogin(); }}),
-        std::make_pair(Button::X, Action{"打开网盘", [this](){ OpenFileBrowser(); }})
+        std::make_pair(Button::X, Action{"打开网盘", [this](){ OpenFileBrowser(); }}),
+        std::make_pair(Button::L2, Action{"编辑配置", [this](){ EditConfig(); }}),
+        std::make_pair(Button::R2, Action{"测试连接", [this](){ TestConnection(); }})
     );
 
     for (const auto& p : PROVIDERS) {
@@ -275,6 +278,18 @@ void Menu::ClearQr() {
 
 void Menu::RefreshStatus() {
     m_authed.clear();
+    m_mounted.clear();
+
+    // 收集当前已挂载的网盘 section（挂载点格式 `[SECTION] name:/`）。
+    std::vector<std::string> mounted_sections;
+    for (const auto& e : location::GetStdio(false)) {
+        if (e.mount.size() > 2 && e.mount[0] == '[') {
+            const auto end = e.mount.find(']');
+            if (end != std::string::npos) {
+                mounted_sections.push_back(e.mount.substr(1, end - 1));
+            }
+        }
+    }
 
     for (const auto& p : m_entries) {
         bool authed = false;
@@ -296,6 +311,15 @@ void Menu::RefreshStatus() {
         }
 
         m_authed.push_back(authed);
+
+        bool mounted = false;
+        for (const auto& s : mounted_sections) {
+            if (s == p.section) {
+                mounted = true;
+                break;
+            }
+        }
+        m_mounted.push_back(mounted);
     }
 }
 
@@ -322,6 +346,66 @@ void Menu::Login() {
 
     RefreshStatus();
     App::Notify("已保存，重启 Sphaira 后生效");
+}
+
+void Menu::EditConfig() {
+    if (m_index >= m_entries.size()) {
+        return;
+    }
+
+    const auto& p = m_entries[m_index];
+
+    // 确保配置目录存在，保存时才能创建文件。
+    fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira/mount");
+
+    // 用文本编辑器打开该网盘的 ini，可直接查看/修改身份信息。
+    m_edit_fs = std::make_shared<fs::FsNativeSd>();
+    App::Push<fileview::Menu>(m_edit_fs.get(), fs::FsPath{p.ini_path});
+}
+
+void Menu::TestConnection() {
+    if (m_index >= m_entries.size()) {
+        return;
+    }
+
+    const auto& p = m_entries[m_index];
+    const std::string prefix = "[" + std::string(p.section) + "] ";
+
+    for (const auto& e : location::GetStdio(false)) {
+        if (!e.mount.starts_with(prefix)) {
+            continue;
+        }
+
+        // 已挂载：尝试列出根目录，验证鉴权与列表接口是否可用。
+        const fs::FsPath mount{e.mount};
+        auto fs = std::make_shared<fs::FsStdio>(true, mount);
+
+        fs::Dir dir;
+        if (R_FAILED(fs->OpenDirectory(mount, FsDirOpenMode_ReadDirs | FsDirOpenMode_ReadFiles, &dir))) {
+            App::Notify("已挂载，但打开目录失败（鉴权可能失效）");
+            return;
+        }
+
+        std::vector<FsDirectoryEntry> entries;
+        if (R_FAILED(dir.ReadAll(entries))) {
+            App::Notify("已挂载，但读取目录失败");
+            return;
+        }
+
+        s64 dirs = 0, files = 0;
+        for (const auto& en : entries) {
+            if (en.type == FsDirEntryType_Dir) {
+                dirs++;
+            } else {
+                files++;
+            }
+        }
+
+        App::Notify("连接成功：" + std::to_string(dirs) + " 个文件夹 / " + std::to_string(files) + " 个文件");
+        return;
+    }
+
+    App::Notify("未挂载，请先登录配置并重启 Sphaira");
 }
 
 void Menu::OpenFileBrowser() {
@@ -725,9 +809,18 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
         const auto& p = m_entries[pos];
         const bool selected = pos == m_index;
 
-        const char* status = (pos < m_authed.size() && m_authed[pos]) ? "已配置" : "未配置";
-        if (!p.auth_key || !*p.auth_key) {
-            status = "自动";
+        const bool authed = (pos < m_authed.size() && m_authed[pos]);
+        const bool mounted = (pos < m_mounted.size() && m_mounted[pos]);
+
+        const char* status;
+        if (mounted) {
+            status = "已挂载";
+        } else if (!p.auth_key || !*p.auth_key) {
+            status = "自动（未挂载）";
+        } else if (authed) {
+            status = "已配置（未挂载）";
+        } else {
+            status = "未配置";
         }
 
         int image = 0;
@@ -738,7 +831,7 @@ void Menu::Draw(NVGcontext* vg, Theme* theme) {
             image = m_logo_images[pos];
         }
 
-        DrawEntry(vg, theme, grid::LayoutType_List, v, selected, image, p.name, "", status);
+        DrawEntry(vg, theme, grid::LayoutType_List, v, selected, image, p.name, p.ini_path, status);
     });
 }
 

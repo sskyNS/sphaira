@@ -21,6 +21,7 @@
 #include "ui/menus/game_version_menu.hpp"
 #include "ui/menus/cloud_menu.hpp"
 #include "ui/menus/theme_install_menu.hpp"
+#include "ui/menus/film_warehouse.hpp"
 #include "ui/menus/save_menu.hpp"
 #include "ui/menus/appstore.hpp"
 
@@ -324,6 +325,11 @@ const MiscMenuEntry MISC_MENU_ENTRIES[] = {
         "Install .nxtheme files from /themes/sphaira.\n\n"
         "Requires a dumped base theme at /themes/sphaira/dump/{TitleId}/lyt/*.szs. "
         "Patched themes are written to /atmosphere/contents/{TitleId}/romfs/lyt/*.szs." },
+
+    { .name = "影视仓", .title = "影视仓", .func = MiscMenuFuncGenerator<ui::menu::film_warehouse::Menu>, .flag = MiscMenuFlag_Shortcut, .info =
+        "扫描 SD 卡与已挂载网盘中的视频文件，自动识别电影 / 剧集并入库。\n\n"
+        "按 X 扫描入库；在 /config/sphaira/tmdb.ini 填入 TMDB api_key 可刮削海报。\n"
+        "按 A 打开文件所在目录，在文件浏览器中与网盘交互（复制 / 下载 / 关联外部播放器）。" },
 
     { .name = "FileBrowser", .title = "FileBrowser", .func = MiscMenuFuncGenerator<ui::menu::filebrowser::Menu>, .flag = MiscMenuFlag_Shortcut, .info =
         "Browse files on you SD Card. "

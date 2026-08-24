@@ -2,6 +2,7 @@
 
 #include "ui/menus/grid_menu_base.hpp"
 #include "ui/list.hpp"
+#include "fs.hpp"
 
 #include <memory>
 #include <cstdint>
@@ -28,6 +29,8 @@ struct Menu final : grid::Menu {
 
 private:
     void Login();
+    void EditConfig();
+    void TestConnection();
     void OpenFileBrowser();
     void StartDeviceCodeLogin();
     void PollDeviceCodeLogin();
@@ -37,8 +40,12 @@ private:
 
     std::vector<Provider> m_entries{};
     std::vector<bool> m_authed{};
+    std::vector<bool> m_mounted{};
     s64 m_index{};
     std::unique_ptr<List> m_list{};
+
+    // 文本编辑器打开 ini 时使用的 SD 文件系统句柄（须比编辑器存活更久）。
+    std::shared_ptr<fs::FsNativeSd> m_edit_fs{};
 
     // 扫码登录状态
     bool m_login_active{};

@@ -42,31 +42,54 @@ void Menu::Scan() {
     m_entries.clear();
 
     fs::FsNativeSd fs;
-    fs::Dir dir;
-    if (R_FAILED(fs.OpenDirectory(THEMES_DIR, FsDirOpenMode_ReadFiles, &dir))) {
-        return;
-    }
-    ON_SCOPE_EXIT(dir.Close());
 
-    std::vector<FsDirectoryEntry> entries;
-    if (R_FAILED(dir.ReadAll(entries))) {
-        return;
-    }
-
-    for (const auto& e : entries) {
-        if (e.type != FsDirEntryType_File) {
-            continue;
-        }
-        const char* ext = std::strrchr(e.name, '.');
-        if (!ext || strncasecmp(ext, ".nxtheme", 8)) {
-            continue;
+    // 递归扫描 /themes/sphaira 及其子目录，找到所有 .nxtheme 文件。
+    // 这样用户把主题放在子文件夹里也能被识别。
+    auto walk = [&](auto&& self, const std::string& dir_path) -> void {
+        fs::Dir dir;
+        if (R_FAILED(fs.OpenDirectory(dir_path, FsDirOpenMode_ReadDirs | FsDirOpenMode_ReadFiles, &dir))) {
+            return;
         }
 
-        Entry entry;
-        entry.name = e.name;
-        entry.path = fs::AppendPath(THEMES_DIR, e.name);
-        m_entries.emplace_back(std::move(entry));
-    }
+        std::vector<FsDirectoryEntry> entries;
+        if (R_FAILED(dir.ReadAll(entries))) {
+            return;
+        }
+
+        for (const auto& e : entries) {
+            if (e.name[0] == '.') {
+                continue;
+            }
+
+            const std::string child = fs::AppendPath(dir_path, e.name);
+
+            if (e.type == FsDirEntryType_Dir) {
+                self(self, child);
+            } else if (e.type == FsDirEntryType_File) {
+                const char* ext = std::strrchr(e.name, '.');
+                if (!ext || strncasecmp(ext, ".nxtheme", 8)) {
+                    continue;
+                }
+
+                Entry entry;
+                entry.path = child;
+
+                // 显示相对于 /themes/sphaira 的路径，避免重名混淆。
+                std::string rel = child;
+                if (rel.starts_with(THEMES_DIR)) {
+                    rel.erase(0, std::strlen(THEMES_DIR));
+                    while (!rel.empty() && rel.front() == '/') {
+                        rel.erase(rel.begin());
+                    }
+                }
+                entry.name = rel.empty() ? e.name : rel;
+
+                m_entries.emplace_back(std::move(entry));
+            }
+        }
+    };
+
+    walk(walk, THEMES_DIR);
 
     log_write("[theme_install] found %zu nxtheme files\n", m_entries.size());
 }
