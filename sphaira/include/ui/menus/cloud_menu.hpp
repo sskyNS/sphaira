@@ -27,12 +27,20 @@ struct Menu final : grid::Menu {
 
 private:
     void Login();
+    void StartDeviceCodeLogin();
+    void PollDeviceCodeLogin();
     void RefreshStatus();
 
     std::vector<Provider> m_entries{};
     std::vector<bool> m_authed{};
     s64 m_index{};
     std::unique_ptr<List> m_list{};
+
+    // 设备码登录状态（光鸭）
+    bool m_login_active{};
+    u64 m_login_next_poll_ms{};
+    std::string m_login_url{};
+    std::string m_login_code{};
 };
 
 } // namespace sphaira::ui::menu::cloud
