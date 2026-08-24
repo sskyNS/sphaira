@@ -848,8 +848,29 @@ void FsView::InstallFiles() {
             App::PopToMenu();
 
             App::Push<ui::ProgressBox>(0, "Installing "_i18n, "", [this, targets](auto pbox) -> Result {
+                const bool is_sd = IsSd();
+                fs::FsNativeSd sd_fs;
+
                 for (auto& e : targets) {
-                    R_TRY(yati::InstallFromFile(pbox, m_fs.get(), GetNewPath(e)));
+                    fs::FsPath install_path = GetNewPath(e);
+                    fs::Fs* install_fs = m_fs.get();
+
+                    if (!is_sd) {
+                        // 网络文件：先下载到本地缓存再安装，避免大量随机 HTTP Range 请求导致安装失败。
+                        sd_fs.CreateDirectoryRecursively("/switch/sphaira/cache");
+                        install_path = fs::FsPath{std::string("/switch/sphaira/cache/") + std::string(e.GetName())};
+                        pbox->SetTitle(e.GetName());
+                        pbox->NewTransfer(i18n::Reorder("Downloading ", e.GetName()));
+                        R_TRY(pbox->CopyFile(m_fs.get(), &sd_fs, GetNewPath(e), install_path, false));
+                        install_fs = &sd_fs;
+                    }
+
+                    R_TRY(yati::InstallFromFile(pbox, install_fs, install_path));
+
+                    if (!is_sd) {
+                        sd_fs.DeleteFile(install_path);
+                    }
+
                     App::Notify(i18n::Reorder("Installed ", e.GetName()));
                 }
 

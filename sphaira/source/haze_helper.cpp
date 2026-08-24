@@ -65,11 +65,18 @@ struct FsProxyBase : haze::FileSystemProxyImpl {
         const auto len = std::strlen(GetName());
 
         if (len && !strncasecmp(path, GetName(), len)) {
-            std::snprintf(buf, sizeof(buf), "%s/%s", base, path + len);
-        } else {
-            std::snprintf(buf, sizeof(buf), "%s/%s", base, path);
-            // std::strcpy(buf, path);
+            path += len;
         }
+        // 去掉开头的斜杠，避免拼出 // 双斜杠。
+        while (*path == '/') {
+            path++;
+        }
+
+        // 保证 base 与 path 之间恰好一个 /。
+        const auto base_len = std::strlen(base);
+        std::snprintf(buf, sizeof(buf), "%s%s%s", base,
+                      (base_len && base[base_len - 1] == '/') ? "" : "/",
+                      path);
 
         log_write("[FixPath] %s -> %s\n", path, buf.s);
         return buf;
