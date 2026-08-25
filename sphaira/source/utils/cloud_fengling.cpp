@@ -5,6 +5,7 @@
 #include "log.hpp"
 
 #include <cstring>
+#include <cstdio>
 
 namespace sphaira::devoptab {
 namespace {
@@ -222,12 +223,24 @@ private:
 } // namespace
 
 Result MountFenglingAll() {
-    return common::MountNetworkDevice([](const common::MountConfig& config) {
-            return std::make_unique<FenglingDevice>(config);
-        },
-        sizeof(cloud::File), sizeof(cloud::Dir),
-        "FENGLING"
-    );
+    // 风灵月影是内置公共服务器，无需 ini 配置，启动时直接挂载默认设备。
+    common::MountConfig config{};
+    config.name = "风灵月影";
+    config.url = "https://share.sskyswitch.cn";
+
+    char name[256]{};
+    char mount[256]{};
+    std::snprintf(name, sizeof(name), "[FENGLING] %s", config.name.c_str());
+    std::snprintf(mount, sizeof(mount), "[FENGLING] %s:/", config.name.c_str());
+
+    if (!common::MountNetworkDevice2(
+            std::make_unique<FenglingDevice>(config),
+            config, sizeof(cloud::File), sizeof(cloud::Dir),
+            name, mount)) {
+        log_write("[FENGLING] Failed to mount built-in device\n");
+    }
+
+    R_SUCCEED();
 }
 
 } // namespace sphaira::devoptab
