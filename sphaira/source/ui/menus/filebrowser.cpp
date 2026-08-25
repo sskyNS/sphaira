@@ -34,6 +34,7 @@
 
 #include "yati/yati.hpp"
 #include "yati/source/file.hpp"
+#include "yati/nx/ns.hpp"
 
 #include <minIni.h>
 #include <minizip/zip.h>
@@ -376,6 +377,73 @@ auto IsExtension(std::string_view ext, std::span<const std::string_view> list) -
 
 void SignalChange() {
     g_change_signalled = true;
+}
+
+// 从文件名中解析 16 位十六进制 Title ID（形如 [0100CD801CE5E000]）。
+// 标准游戏文件名通常包含该 TID，可在下载开始前直接取得。
+auto ExtractTitleId(std::string_view name, u64& tid) -> bool {
+    for (size_t i = 0; i + 18 <= name.size(); ++i) {
+        if (name[i] != '[') {
+            continue;
+        }
+
+        u64 v = 0;
+        bool ok = true;
+        for (size_t k = 0; k < 16; ++k) {
+            const char c = name[i + 1 + k];
+            if (c >= '0' && c <= '9') {
+                v = (v << 4) | (u64)(c - '0');
+            } else if (c >= 'a' && c <= 'f') {
+                v = (v << 4) | (u64)(c - 'a' + 10);
+            } else if (c >= 'A' && c <= 'F') {
+                v = (v << 4) | (u64)(c - 'A' + 10);
+            } else {
+                ok = false;
+                break;
+            }
+        }
+
+        if (ok && name[i + 17] == ']') {
+            tid = v;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// 通过 Title ID 从 NS 服务读取已安装游戏的图标与名称，用于在下载阶段就提前展示。
+// 仅对「已安装」的游戏有效；未安装时返回 false，回退到安装阶段再解析图标。
+auto TryGetGameInfoFromNs(u64 tid, std::vector<u8>& icon, std::string& name) -> bool {
+    if (!tid) {
+        return false;
+    }
+
+    if (R_FAILED(ns::Initialize())) {
+        return false;
+    }
+    ON_SCOPE_EXIT(ns::Exit());
+
+    NsApplicationControlData control{};
+    size_t actual_size{};
+    if (R_FAILED(nsGetApplicationControlData(NsApplicationControlSource_Storage, tid, &control, sizeof(control), &actual_size))) {
+        return false;
+    }
+
+    NacpLanguageEntry* lang{};
+    if (R_SUCCEEDED(nsGetApplicationDesiredLanguage(&control.nacp, &lang)) && lang && lang->name[0]) {
+        name = lang->name;
+    } else if (R_SUCCEEDED(nacpGetLanguageEntry(&control.nacp, &lang)) && lang && lang->name[0]) {
+        name = lang->name;
+    }
+
+    // control 数据 = NacpStruct + JPEG icon，因此 icon 大小为实际大小减去 NACP。
+    const auto jpeg_size = actual_size - sizeof(NacpStruct);
+    if (jpeg_size > 0 && jpeg_size <= sizeof(control.icon)) {
+        icon.assign(control.icon, control.icon + jpeg_size);
+    }
+
+    return !name.empty() || !icon.empty();
 }
 
 FsView::FsView(Base* menu, const std::shared_ptr<fs::Fs>& fs, const fs::FsPath& path, const FsEntry& entry, ViewSide side) : m_menu{menu}, m_side{side} {
@@ -859,7 +927,21 @@ void FsView::InstallFiles() {
                         // 网络文件：先下载到本地缓存再安装，避免大量随机 HTTP Range 请求导致安装失败。
                         sd_fs.CreateDirectoryRecursively("/switch/sphaira/cache");
                         install_path = fs::FsPath{std::string("/switch/sphaira/cache/") + std::string(e.GetName())};
-                        pbox->SetTitle(e.GetName());
+
+                        // 下载开始前尝试从文件名解析 TID，并读取已安装游戏的图标/名称，
+                        // 使下载阶段就能显示对应游戏图标（仅对已安装游戏有效）。
+                        u64 tid{};
+                        std::vector<u8> icon;
+                        std::string game_name;
+                        if (ExtractTitleId(e.GetName(), tid) && TryGetGameInfoFromNs(tid, icon, game_name)) {
+                            if (!icon.empty()) {
+                                pbox->SetImageData(icon);
+                            }
+                            pbox->SetTitle(game_name.empty() ? std::string(e.GetName()) : game_name);
+                        } else {
+                            pbox->SetTitle(e.GetName());
+                        }
+
                         pbox->NewTransfer(i18n::Reorder("Downloading ", e.GetName()));
                         R_TRY(pbox->CopyFile(m_fs.get(), &sd_fs, GetNewPath(e), install_path, false));
                         install_fs = &sd_fs;
