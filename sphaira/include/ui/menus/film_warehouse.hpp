@@ -44,6 +44,8 @@ private:
     void OpenEntry();
     void Play();
     void Search();
+    void AiConfig();
+    void TestAiConnection();
     auto DoScan(sphaira::ui::ProgressBox* pbox) -> std::vector<MediaEntry>;
 
     std::vector<MediaEntry> m_entries{};

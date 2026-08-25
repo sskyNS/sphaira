@@ -32,7 +32,6 @@ namespace {
 
 constexpr const char* LIBRARY_PATH = "/switch/sphaira/library.json";
 constexpr const char* POSTER_DIR = "/switch/sphaira/posters";
-constexpr const char* TMDB_INI = "/config/sphaira/tmdb.ini";
 constexpr const char* PLAYER_INI = "/config/sphaira/film_warehouse.ini";
 constexpr const char* PLAYER_DEFAULT = "/switch/nxmp/nxmp.nro";
 constexpr const char* PANSOU_URL = "https://so.252035.xyz/api/search";
@@ -226,12 +225,6 @@ const char* SourceFromMount(const std::string& mount, const std::string& fallbac
     return fallback.c_str();
 }
 
-std::string ReadTmdbKey() {
-    char buf[256]{};
-    ini_gets("TMDB", "api_key", "", buf, sizeof(buf), TMDB_INI);
-    return std::string{buf};
-}
-
 std::string ReadPlayerPath() {
     char buf[512]{};
     ini_gets("player", "path", PLAYER_DEFAULT, buf, sizeof(buf), PLAYER_INI);
@@ -352,15 +345,68 @@ struct AiConfig {
     }
 };
 
+// 规范化用户填写的 OpenAI 兼容 base URL：去掉首尾空白、尾部斜杠，
+// 以及多余的 /chat/completions 后缀，避免拼成 .../chat/completions/chat/completions (404)。
+std::string NormalizeBaseUrl(const std::string& raw) {
+    std::string s = raw;
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) {
+        s.pop_back();
+    }
+    size_t start = 0;
+    while (start < s.size() && (s[start] == ' ' || s[start] == '\t' || s[start] == '\r' || s[start] == '\n')) {
+        start++;
+    }
+    s = s.substr(start);
+
+    while (!s.empty() && s.back() == '/') {
+        s.pop_back();
+    }
+
+    constexpr std::string_view suffix = "/chat/completions";
+    if (s.size() >= suffix.size() && iequals(std::string_view{s}.substr(s.size() - suffix.size()), suffix)) {
+        s.erase(s.size() - suffix.size());
+        while (!s.empty() && s.back() == '/') {
+            s.pop_back();
+        }
+    }
+
+    return s;
+}
+
+// 去掉粘贴 API key 时混入的空白字符（空格 / tab / 换行），避免保存到错误值。
+std::string SanitizeApiKey(const std::string& raw) {
+    std::string out;
+    out.reserve(raw.size());
+    for (unsigned char c : raw) {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            continue;
+        }
+        out.push_back((char)c);
+    }
+    return out;
+}
+
 AiConfig ReadAiConfig() {
     AiConfig cfg;
     char buf[512]{};
     ini_gets("ai", "base_url", "", buf, sizeof(buf), PLAYER_INI);
-    cfg.base_url = buf;
+    cfg.base_url = NormalizeBaseUrl(buf);
     ini_gets("ai", "api_key", "", buf, sizeof(buf), PLAYER_INI);
-    cfg.api_key = buf;
+    cfg.api_key = SanitizeApiKey(buf);
     ini_gets("ai", "model", "", buf, sizeof(buf), PLAYER_INI);
     cfg.model = buf;
+
+    // 测试用硬编码默认值（DeepSeek），仅在 ini 未配置时兜底。
+    // TODO: 测试完成后移除，改为仅读取 ini。
+    if (cfg.base_url.empty()) {
+        cfg.base_url = "https://api.deepseek.com/v1";
+    }
+    if (cfg.api_key.empty()) {
+        cfg.api_key = "sk-bcc7991df00e451ab592df37a27f96b4";
+    }
+    if (cfg.model.empty()) {
+        cfg.model = "deepseek-v4-pro";
+    }
     return cfg;
 }
 
@@ -407,6 +453,8 @@ bool HttpPostJsonAuth(const std::string& url, const std::string& body, const std
     curl_slist* h = curl_slist_append(nullptr, "Content-Type: application/json");
     if (!api_key.empty()) {
         h = curl_slist_append(h, ("Authorization: Bearer " + api_key).c_str());
+        // MiMo / Azure-OpenAI 等兼容服务读的是 api-key 头，而不是 Authorization。
+        h = curl_slist_append(h, ("api-key: " + api_key).c_str());
     }
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -465,12 +513,15 @@ bool LlmChat(const AiConfig& cfg, const std::string& system, const std::string& 
     return !out.empty();
 }
 
-bool TmdbSearch(const std::string& api_key, const std::string& title, const std::string& year,
+// 使用 mediary-scout 作者部署的公共 TMDB 代理（无需自备 TMDB key）：
+//   - 元数据：https://tmdb-proxy.mediaryscout.app/search/...
+//   - 海报图：https://tmdb-proxy.mediaryscout.app/img/t/p/w342/<poster_path>
+// 该代理在服务端注入作者的 TMDB key，并解决了 image.tmdb.org 在大陆被墙的问题。
+bool TmdbSearch(const std::string& title, const std::string& year,
                 const std::string& kind, std::string& out_poster_url, std::string& out_year) {
-    std::string url = "https://api.themoviedb.org/3/search/";
+    std::string url = "https://tmdb-proxy.mediaryscout.app/search/";
     url += (kind == "tv") ? "tv" : "movie";
-    url += "?api_key=" + curl::EscapeString(api_key);
-    url += "&query=" + curl::EscapeString(title);
+    url += "?query=" + curl::EscapeString(title);
     if (!year.empty()) {
         url += "&year=" + year;
     }
@@ -499,7 +550,7 @@ bool TmdbSearch(const std::string& api_key, const std::string& title, const std:
     yyjson_arr_foreach(results, idx, max, item) {
         const auto poster = yyjson_obj_get(item, "poster_path");
         if (poster && yyjson_is_str(poster) && yyjson_get_str(poster)[0]) {
-            out_poster_url = std::string("https://image.tmdb.org/t/p/w300") + yyjson_get_str(poster);
+            out_poster_url = std::string("https://tmdb-proxy.mediaryscout.app/img/t/p/w342") + yyjson_get_str(poster);
         }
 
         auto date = yyjson_obj_get(item, "release_date");
@@ -576,7 +627,8 @@ Menu::Menu(u32 flags) : grid::Menu{"影视仓", flags} {
         std::make_pair(Button::X, Action{"扫描入库", [this](){ StartScan(); }}),
         std::make_pair(Button::Y, Action{"清空媒体库", [this](){ ClearLibrary(); }}),
         std::make_pair(Button::L2, Action{"打开目录", [this](){ OpenEntry(); }}),
-        std::make_pair(Button::R2, Action{"搜索", [this](){ Search(); }})
+        std::make_pair(Button::R2, Action{"搜索", [this](){ Search(); }}),
+        std::make_pair(Button::R3, Action{"AI 设置", [this](){ AiConfig(); }})
     );
 
     LoadLibrary();
@@ -846,6 +898,61 @@ void Menu::Search() {
     );
 }
 
+void Menu::AiConfig() {
+    const auto set_field = [this](const char* key, const char* title, const char* guide) {
+        char buf[512]{};
+        ini_gets("ai", key, "", buf, sizeof(buf), PLAYER_INI);
+        const std::string cur = buf;
+
+        std::string out;
+        if (R_FAILED(swkbd::ShowText(out, title, guide, cur.empty() ? nullptr : cur.c_str(), 0, 512))) {
+            return;
+        }
+
+        fs::FsNativeSd().CreateDirectoryRecursively("/config/sphaira");
+        ini_puts("ai", key, out.c_str(), PLAYER_INI);
+        App::Notify("AI 配置已保存");
+    };
+
+    App::Push<PopupList>("AI 设置",
+        PopupList::Items{"设置 Base URL", "设置 API Key", "设置模型", "测试连接"},
+        [this, set_field](std::optional<s64> index) {
+            if (!index.has_value()) {
+                return;
+            }
+            switch (*index) {
+                case 0: set_field("base_url", "Base URL", "OpenAI 兼容接口，如 https://api.openai.com/v1"); break;
+                case 1: set_field("api_key", "API Key", "云端服务必填，本地模型可留空"); break;
+                case 2: set_field("model", "模型", "如 gpt-4o-mini / deepseek-chat"); break;
+                case 3: TestAiConnection(); break;
+            }
+        });
+}
+
+void Menu::TestAiConnection() {
+    const auto cfg = ReadAiConfig();
+    if (!cfg.valid()) {
+        App::Notify("请先配置 Base URL 和模型");
+        return;
+    }
+
+    auto result = std::make_shared<std::string>();
+    App::Push<ProgressBox>(0, "测试连接", "正在请求 AI 接口...",
+        [cfg, result](sphaira::ui::ProgressBox* pbox) -> Result {
+            std::string out;
+            const bool ok = LlmChat(cfg, "You are a helpful assistant.", "ping", out);
+            if (ok) {
+                *result = "连接成功：" + out;
+            } else {
+                *result = "连接失败，请检查 Base URL / API Key / 模型名";
+            }
+            return 0;
+        },
+        [result](Result rc) {
+            App::Notify(*result);
+        });
+}
+
 std::vector<MediaEntry> Menu::DoScan(sphaira::ui::ProgressBox* pbox) {
     std::vector<MediaEntry> out;
     out.reserve(4096);
@@ -949,9 +1056,8 @@ std::vector<MediaEntry> Menu::DoScan(sphaira::ui::ProgressBox* pbox) {
         }
     }
 
-    // 3. AI 入库：用 TMDB 为去重后的标题刮削海报与年份（可选，需自备 API key）。
-    const std::string api_key = ReadTmdbKey();
-    if (!api_key.empty() && !out.empty()) {
+    // 3. 刮削海报与年份：走作者公共 TMDB 代理，无需自备 API key。
+    if (!out.empty()) {
         if (pbox) pbox->NewTransfer("正在刮削元数据...");
 
         fs::FsNativeSd sd;
@@ -978,7 +1084,7 @@ std::vector<MediaEntry> Menu::DoScan(sphaira::ui::ProgressBox* pbox) {
             attempted.insert(key);
 
             std::string poster_url, tmdb_year;
-            if (!TmdbSearch(api_key, e.title, e.year, e.kind, poster_url, tmdb_year)) {
+            if (!TmdbSearch(e.title, e.year, e.kind, poster_url, tmdb_year)) {
                 continue;
             }
 
