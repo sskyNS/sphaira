@@ -69,6 +69,9 @@ struct QuarkDevice final : cloud::CloudDiskDevice {
             }
 
             if (!e.name.empty()) {
+                if (!e.is_dir) {
+                    log_write_feature("[QUARK] entry name=%s size=%llu\n", e.name.c_str(), (unsigned long long)e.size);
+                }
                 out.push_back(std::move(e));
             }
         }

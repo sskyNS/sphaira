@@ -68,7 +68,19 @@ struct BaiduDevice final : cloud::CloudDiskDevice {
         m_bdstoken = FindExtraCI(config.extra, {"bdstoken"});
     }
 
+    // 判断凭证是否为占位符（用户尚未真正登录/填写）。
+    static bool is_placeholder(const std::string& v) {
+        return v.find("你的") != std::string::npos || v.find("填入") != std::string::npos;
+    }
+
     bool auth() override {
+        // 占位符 token 视为未授权，避免用无效凭证请求接口导致“授权失败”。
+        if (is_placeholder(m_access_token)) {
+            m_access_token.clear();
+        }
+        if (is_placeholder(m_bduss)) {
+            m_bduss.clear();
+        }
         if (!m_access_token.empty() || !m_bduss.empty()) {
             return true;
         }

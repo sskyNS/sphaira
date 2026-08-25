@@ -983,10 +983,15 @@ Result PushPullThreadData::CreateAndStart() {
 }
 
 void PushPullThreadData::Cancel() {
-    SCOPED_MUTEX(&mutex);
-    finished = true;
-    condvarWakeOne(&can_pull);
-    condvarWakeOne(&can_push);
+    {
+        SCOPED_MUTEX(&mutex);
+        finished = true;
+        condvarWakeOne(&can_pull);
+        condvarWakeOne(&can_push);
+    }
+    // 恢复 curl，让 progress_callback 检测到 finished 并中止传输，
+    // 避免 curl 因暂停（buffer 满）而无法响应取消。
+    curl_easy_pause(curl, CURLPAUSE_CONT);
 }
 
 bool PushPullThreadData::IsRunning() {
@@ -1168,6 +1173,13 @@ void PushPullThreadData::thread_func(void* arg) {
     data->finished = true;
     data->error = res != CURLE_OK;
     curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &data->code);
+
+    curl_off_t downloaded = 0;
+    curl_off_t content_length = 0;
+    curl_easy_getinfo(data->curl, CURLINFO_SIZE_DOWNLOAD, &downloaded);
+    curl_easy_getinfo(data->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &content_length);
+    log_write_feature("[CLOUD] curl done code=%ld downloaded=%lld content_length=%lld\n",
+        data->code, (long long)downloaded, (long long)content_length);
 
     log_write("[PUSH:PULL] Read thread finished, code: %ld, error: %d\n", data->code, data->error);
 }

@@ -1697,6 +1697,7 @@ App::App(const char* argv0) {
             m_fs->CreateDirectory("/config/sphaira/github");
             m_fs->CreateDirectory("/config/sphaira/i18n");
             m_fs->CreateDirectory("/config/sphaira/mount");
+            m_fs->CreateDirectory("/config/sphaira/logs");
 
             if (!ini_haskey("steamgriddb", "api_key", CONFIG_PATH)) {
                 ini_puts("steamgriddb", "api_key", "", CONFIG_PATH);

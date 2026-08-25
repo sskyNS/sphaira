@@ -165,6 +165,10 @@ common::PushThreadData* CloudDiskDevice::create_download(const std::string& url,
     // 同时关闭自动 Accept-Encoding，避免 CDN 因压缩头返回 412。
     curl_easy_setopt(this->transfer_curl, CURLOPT_AUTOREFERER, 0L);
     curl_easy_setopt(this->transfer_curl, CURLOPT_ACCEPT_ENCODING, (char*)nullptr);
+    // 取消下载时 curl 可能因 buffer 满而暂停，设置低速超时兜底，确保最终能中止传输。
+    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_TIME, 10L);
+    curl_easy_setopt(this->transfer_curl, CURLOPT_BUFFERSIZE, 1024L * 256L);
     curl_easy_setopt(this->transfer_curl, CURLOPT_WRITEFUNCTION, common::PushThreadData::push_thread_callback);
     curl_easy_setopt(this->transfer_curl, CURLOPT_WRITEDATA, (void*)data);
     if (headers) {
@@ -255,11 +259,13 @@ ssize_t CloudDiskDevice::devoptab_read(void* fd, char* ptr, size_t len) {
                 if (headers) {
                     curl_slist_free_all(headers);
                 }
+                log_write_feature("[CLOUD] resolve_download_url failed rc=%d name=%s\n", rc, entry->name.c_str());
                 return rc;
             }
             f->dl_url = new std::string(std::move(url));
             f->headers = headers;
             f->dl_resolved = true;
+            log_write_feature("[CLOUD] download start name=%s size=%llu\n", entry->name.c_str(), (unsigned long long)entry->size);
         }
         if (f->dl_url->empty()) {
             return -EIO;
@@ -273,6 +279,13 @@ ssize_t CloudDiskDevice::devoptab_read(void* fd, char* ptr, size_t len) {
     const auto ret = f->pdata->PullData(ptr, len);
     f->off += ret;
     f->last_off = f->off;
+
+    // 下载提前结束（curl 已完成但字节数不足），记录诊断信息便于定位缓存文件不完整。
+    if (ret == 0 && f->off < entry->size) {
+        log_write_feature("[CLOUD] download truncated name=%s off=%llu expected=%llu\n",
+            entry->name.c_str(), (unsigned long long)f->off, (unsigned long long)entry->size);
+    }
+
     return (ssize_t)ret;
 }
 
