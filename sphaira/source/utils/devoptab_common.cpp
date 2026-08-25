@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 #include <fcntl.h>
 #include <minIni.h>
 #include <curl/curl.h>
@@ -1161,7 +1162,10 @@ void PushPullThreadData::thread_func(void* arg) {
 
     curl_easy_setopt(data->curl, CURLOPT_XFERINFODATA, data);
     curl_easy_setopt(data->curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
+    const auto t0 = std::chrono::steady_clock::now();
     const auto res = curl_easy_perform(data->curl);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
 
     log_write("[PUSH:PULL] curl_easy_perform() returned: %s\n", curl_easy_strerror(res));
 
@@ -1178,8 +1182,10 @@ void PushPullThreadData::thread_func(void* arg) {
     double content_length = 0;
     curl_easy_getinfo(data->curl, CURLINFO_SIZE_DOWNLOAD, &downloaded);
     curl_easy_getinfo(data->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &content_length);
-    log_write_feature("[CLOUD] curl done code=%ld downloaded=%.0f content_length=%.0f\n",
-        data->code, downloaded, content_length);
+
+    const double kbps = elapsed_ms > 0 ? (downloaded / 1024.0) / (elapsed_ms / 1000.0) : 0.0;
+    log_write_feature("[CLOUD] curl done code=%ld downloaded=%.0f content_length=%.0f elapsed_ms=%lld avg_kbps=%.0f error=%d\n",
+        data->code, downloaded, content_length, (long long)elapsed_ms, kbps, data->error ? 1 : 0);
 
     log_write("[PUSH:PULL] Read thread finished, code: %ld, error: %d\n", data->code, data->error);
 }

@@ -91,7 +91,7 @@ bool fix_path(const char* str, char* out, bool strip_leading_slash = false);
 void update_devoptab_for_read_only(devoptab_t* devoptab, bool read_only);
 
 struct PushPullThreadData {
-    static constexpr size_t MAX_BUFFER_SIZE = 1024 * 512; // 512KB max buffer（云盘下载提速）
+    static constexpr size_t MAX_BUFFER_SIZE = 1024 * 1024 * 4; // 4MB max buffer（云盘下载提速，减少 pause/resume 抖动）
 
     explicit PushPullThreadData(CURL* _curl);
     virtual ~PushPullThreadData();

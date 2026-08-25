@@ -1118,8 +1118,13 @@ Result Yati::InstallCnmtNca(std::span<TikCollection> tickets, CnmtCollection& cn
         }
     }
 
-    // sort ncas
+    // sort ncas; 优先安装 Control NCA，使 icon 与游戏名称能尽早读取并展示。
     const auto sorter = [](NcaCollection& lhs, NcaCollection& rhs) -> bool {
+        const auto l_ctrl = lhs.type == NcmContentType_Control;
+        const auto r_ctrl = rhs.type == NcmContentType_Control;
+        if (l_ctrl != r_ctrl) {
+            return l_ctrl;
+        }
         return lhs.type > rhs.type;
     };
 

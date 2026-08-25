@@ -165,9 +165,10 @@ common::PushThreadData* CloudDiskDevice::create_download(const std::string& url,
     // 同时关闭自动 Accept-Encoding，避免 CDN 因压缩头返回 412。
     curl_easy_setopt(this->transfer_curl, CURLOPT_AUTOREFERER, 0L);
     curl_easy_setopt(this->transfer_curl, CURLOPT_ACCEPT_ENCODING, (char*)nullptr);
-    // 取消下载导致 buffer 满暂停时，用极低低速阈值兜底中止（正常下载不受影响）。
-    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_TIME, 15L);
+    // 下载使用自有的 buffer 满暂停 + 消费端唤醒机制，不再依赖 libcurl 低速率超时，
+    // 否则大文件下载在 buffer 满暂停期间可能被误判为低速而中止（表现为速度归零）。
+    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_LIMIT, 0L);
+    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_TIME, 0L);
     // 增大接收缓冲区，提升大文件下载吞吐。
     curl_easy_setopt(this->transfer_curl, CURLOPT_BUFFERSIZE, 1024L * 256L);
     curl_easy_setopt(this->transfer_curl, CURLOPT_WRITEFUNCTION, common::PushThreadData::push_thread_callback);
@@ -180,6 +181,11 @@ common::PushThreadData* CloudDiskDevice::create_download(const std::string& url,
         char range[64];
         std::snprintf(range, sizeof(range), "%zu-", offset);
         curl_easy_setopt(this->transfer_curl, CURLOPT_RANGE, range);
+        log_write_feature("[CLOUD] download range start offset=%zu buffer=%zu\n",
+            offset, (size_t)common::PushThreadData::MAX_BUFFER_SIZE);
+    } else {
+        log_write_feature("[CLOUD] download full start buffer=%zu\n",
+            (size_t)common::PushThreadData::MAX_BUFFER_SIZE);
     }
 
     if (R_FAILED(data->CreateAndStart())) {
@@ -246,6 +252,9 @@ ssize_t CloudDiskDevice::devoptab_read(void* fd, char* ptr, size_t len) {
     len = (size_t)std::min<u64>(len, entry->size - f->off);
 
     if (f->off != f->last_off) {
+        // 顺序读取之外发生了随机访问（seek），会触发新的 HTTP Range 请求。
+        log_write_feature("[CLOUD] random read old_off=%llu new_off=%llu name=%s\n",
+            (unsigned long long)f->last_off, (unsigned long long)f->off, entry->name.c_str());
         f->last_off = f->off;
         delete f->pdata;
         f->pdata = nullptr;
