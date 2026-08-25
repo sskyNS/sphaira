@@ -74,7 +74,7 @@ auto log_file_init() -> bool {
         return false;
     }
 
-    auto file = std::fopen(logpath, "w");
+    auto file = std::fopen(logpath, "a");
     if (file) {
         g_file_open = true;
         std::fclose(file);

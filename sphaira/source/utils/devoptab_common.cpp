@@ -1174,12 +1174,12 @@ void PushPullThreadData::thread_func(void* arg) {
     data->error = res != CURLE_OK;
     curl_easy_getinfo(data->curl, CURLINFO_RESPONSE_CODE, &data->code);
 
-    curl_off_t downloaded = 0;
-    curl_off_t content_length = 0;
+    double downloaded = 0;
+    double content_length = 0;
     curl_easy_getinfo(data->curl, CURLINFO_SIZE_DOWNLOAD, &downloaded);
     curl_easy_getinfo(data->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &content_length);
-    log_write_feature("[CLOUD] curl done code=%ld downloaded=%lld content_length=%lld\n",
-        data->code, (long long)downloaded, (long long)content_length);
+    log_write_feature("[CLOUD] curl done code=%ld downloaded=%.0f content_length=%.0f\n",
+        data->code, downloaded, content_length);
 
     log_write("[PUSH:PULL] Read thread finished, code: %ld, error: %d\n", data->code, data->error);
 }

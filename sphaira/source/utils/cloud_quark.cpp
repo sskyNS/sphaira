@@ -100,6 +100,7 @@ struct QuarkDevice final : cloud::CloudDiskDevice {
             return -EIO;
         }
 
+        const int code = cloud::js_int(j.get(), "code", -1);
         auto data = cloud::js_get(j.get(), "data");
 
         // 同步：data 是数组，直接取 download_url。
@@ -118,8 +119,12 @@ struct QuarkDevice final : cloud::CloudDiskDevice {
         }
 
         if (url.empty()) {
+            log_write_feature("[QUARK] resolve_download_url failed code=%d name=%s\n", code, e.name.c_str());
             return -EIO;
         }
+
+        log_write_feature("[QUARK] resolve_download_url ok code=%d name=%s size=%llu url=%.120s\n",
+            code, e.name.c_str(), (unsigned long long)e.size, url.c_str());
 
         // 夸克下载直链必须携带 Referer（否则返回 412 Precondition Failed）。
         headers = download_headers();

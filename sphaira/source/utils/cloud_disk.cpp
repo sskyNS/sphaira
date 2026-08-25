@@ -165,9 +165,10 @@ common::PushThreadData* CloudDiskDevice::create_download(const std::string& url,
     // 同时关闭自动 Accept-Encoding，避免 CDN 因压缩头返回 412。
     curl_easy_setopt(this->transfer_curl, CURLOPT_AUTOREFERER, 0L);
     curl_easy_setopt(this->transfer_curl, CURLOPT_ACCEPT_ENCODING, (char*)nullptr);
-    // 取消下载时 curl 可能因 buffer 满而暂停，设置低速超时兜底，确保最终能中止传输。
-    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
-    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_TIME, 10L);
+    // 取消下载导致 buffer 满暂停时，用极低低速阈值兜底中止（正常下载不受影响）。
+    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(this->transfer_curl, CURLOPT_LOW_SPEED_TIME, 15L);
+    // 增大接收缓冲区，提升大文件下载吞吐。
     curl_easy_setopt(this->transfer_curl, CURLOPT_BUFFERSIZE, 1024L * 256L);
     curl_easy_setopt(this->transfer_curl, CURLOPT_WRITEFUNCTION, common::PushThreadData::push_thread_callback);
     curl_easy_setopt(this->transfer_curl, CURLOPT_WRITEDATA, (void*)data);
