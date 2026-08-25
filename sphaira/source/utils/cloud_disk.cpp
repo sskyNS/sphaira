@@ -161,6 +161,10 @@ common::PushThreadData* CloudDiskDevice::create_download(const std::string& url,
     }
 
     curl_set_common_options(this->transfer_curl, url);
+    // 云盘下载直链需要固定的 Referer（由 provider 的 headers 提供），不能跟随重定向自动改写；
+    // 同时关闭自动 Accept-Encoding，避免 CDN 因压缩头返回 412。
+    curl_easy_setopt(this->transfer_curl, CURLOPT_AUTOREFERER, 0L);
+    curl_easy_setopt(this->transfer_curl, CURLOPT_ACCEPT_ENCODING, (char*)nullptr);
     curl_easy_setopt(this->transfer_curl, CURLOPT_WRITEFUNCTION, common::PushThreadData::push_thread_callback);
     curl_easy_setopt(this->transfer_curl, CURLOPT_WRITEDATA, (void*)data);
     if (headers) {

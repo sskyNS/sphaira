@@ -85,7 +85,12 @@ struct QuarkDevice final : cloud::CloudDiskDevice {
 
         curl_slist* h = this->headers();
         ON_SCOPE_EXIT(curl_slist_free_all(h));
-        const auto resp = http_post(req, body, h);
+
+        // 夸克会在下载 API 响应里 set-cookie 刷新 __puus（下载直链鉴权必需），
+        // 否则缺失 __puus 时下载会返回 412 Precondition Failed。
+        std::string set_cookie_headers;
+        const auto resp = post_capture_setcookie(req, body, h, set_cookie_headers);
+        update_cookie_from_setcookie(set_cookie_headers);
 
         cloud::Json j(resp);
         if (!j) {
@@ -249,6 +254,83 @@ private:
         h = curl_slist_append(h, "Origin: https://pan.quark.cn");
         h = curl_slist_append(h, "Referer: https://pan.quark.cn/");
         return h;
+    }
+
+    static size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
+        auto* out = static_cast<std::string*>(userdata);
+        const size_t n = size * nitems;
+        std::string line(buffer, n);
+        if (line.find("set-cookie:") != std::string::npos || line.find("Set-Cookie:") != std::string::npos) {
+            out->append(line);
+        }
+        return n;
+    }
+
+    // 复用 this->curl 发起 POST，并捕获 set-cookie 响应头。
+    std::string post_capture_setcookie(const std::string& url, const std::string& body, curl_slist* headers, std::string& set_cookie_out) {
+        std::vector<char> buf;
+        curl_set_common_options(this->curl, url);
+        if (headers) {
+            curl_easy_setopt(this->curl, CURLOPT_HTTPHEADER, headers);
+        }
+        curl_easy_setopt(this->curl, CURLOPT_WRITEFUNCTION, MountCurlDevice::write_memory_callback);
+        curl_easy_setopt(this->curl, CURLOPT_WRITEDATA, (void*)&buf);
+        curl_easy_setopt(this->curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(this->curl, CURLOPT_POSTFIELDS, body.c_str());
+        curl_easy_setopt(this->curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+        curl_easy_setopt(this->curl, CURLOPT_HEADERFUNCTION, header_callback);
+        curl_easy_setopt(this->curl, CURLOPT_HEADERDATA, (void*)&set_cookie_out);
+
+        const auto res = curl_easy_perform(this->curl);
+        if (res != CURLE_OK) {
+            return {};
+        }
+        return std::string(buf.data(), buf.size());
+    }
+
+    void set_cookie_value(const std::string& key, const std::string& val) {
+        const std::string prefix = key + "=";
+        const size_t pos = m_cookie.find(prefix);
+        if (pos != std::string::npos) {
+            const size_t val_start = pos + prefix.length();
+            const size_t val_end = m_cookie.find(';', val_start);
+            m_cookie = m_cookie.substr(0, val_start) + val
+                     + (val_end == std::string::npos ? "" : m_cookie.substr(val_end));
+        } else {
+            if (!m_cookie.empty() && m_cookie.back() != ';') {
+                m_cookie += "; ";
+            }
+            m_cookie += prefix + val;
+        }
+    }
+
+    // 从 set-cookie 响应头刷新 __puus / __pus（对齐参考代码 updateCookieFromSetCookie）。
+    void update_cookie_from_setcookie(const std::string& set_cookie_headers) {
+        if (set_cookie_headers.empty()) {
+            return;
+        }
+        auto extract = [&](const std::string& name) -> std::string {
+            const std::string needle = name + "=";
+            size_t pos = 0;
+            while ((pos = set_cookie_headers.find(needle, pos)) != std::string::npos) {
+                const size_t start = pos + needle.length();
+                const size_t end = set_cookie_headers.find(';', start);
+                const std::string val = set_cookie_headers.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                if (!val.empty()) {
+                    return val;
+                }
+                pos = start;
+            }
+            return "";
+        };
+        const std::string puus = extract("__puus");
+        if (!puus.empty()) {
+            set_cookie_value("__puus", puus);
+        }
+        const std::string pus = extract("__pus");
+        if (!pus.empty()) {
+            set_cookie_value("__pus", pus);
+        }
     }
 
     std::string m_cookie{};
