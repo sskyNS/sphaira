@@ -69,7 +69,7 @@ bool CloudDiskDevice::cache_lookup(const std::string& path, CloudEntry& out) con
 int CloudDiskDevice::fetch_dir(const std::string& path, std::vector<CloudEntry>& out) {
     out.clear();
     if (!auth()) {
-        log_write("[CLOUD] auth failed for dir %s\n", path.c_str());
+        log_write_feature("[CLOUD] auth failed for dir %s\n", path.c_str());
         return -EIO;
     }
 
@@ -139,7 +139,7 @@ std::string CloudDiskDevice::http_request(const std::string& url, const std::str
     m_last_http_code = code;
 
     if (res != CURLE_OK) {
-        log_write("[CLOUD] %s %s failed: %s\n", method.c_str(), url.c_str(), curl_easy_strerror(res));
+        log_write_feature("[CLOUD] %s %s failed: %s\n", method.c_str(), url.c_str(), curl_easy_strerror(res));
         return {};
     }
 

@@ -5,12 +5,14 @@
 #include <ctime>
 #include <atomic>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <switch.h>
 
 #if sphaira_USE_LOG
 namespace {
 
 constexpr const char* logpath = "/config/sphaira/log.txt";
+constexpr const char* feature_logpath = "/config/sphaira/logs/feature.txt";
 
 std::atomic_int32_t nxlink_socket{};
 std::atomic_bool g_file_open{};
@@ -31,6 +33,31 @@ void log_write_arg_internal(const char* s, std::va_list* v) {
             std::fprintf(file, "%s", buf);
             std::fclose(file);
         }
+    }
+    if (nxlink_socket) {
+        std::printf("%s", buf);
+    }
+}
+
+void log_write_feature_arg_internal(const char* s, std::va_list* v) {
+    const auto t = std::time(nullptr);
+    const auto tm = std::localtime(&t);
+
+    char buf[512];
+    const auto len = std::snprintf(buf, sizeof(buf), "[%02u:%02u:%02u] -> ", tm->tm_hour, tm->tm_min, tm->tm_sec);
+    std::vsnprintf(buf + len, sizeof(buf) - len, s, *v);
+
+    SCOPED_MUTEX(&g_mutex);
+    // 惰性创建 logs 子目录（mkdir 目录已存在时返回非 0，无副作用）。
+    static bool feature_dir_ready = false;
+    if (!feature_dir_ready) {
+        mkdir("/config/sphaira/logs", 0777);
+        feature_dir_ready = true;
+    }
+    auto file = std::fopen(feature_logpath, "a");
+    if (file) {
+        std::fprintf(file, "%s", buf);
+        std::fclose(file);
     }
     if (nxlink_socket) {
         std::printf("%s", buf);
@@ -103,6 +130,17 @@ void log_write_arg(const char* s, va_list* v) {
     }
 
     log_write_arg_internal(s, v);
+}
+
+void log_write_feature(const char* s, ...) {
+    if (!log_is_init()) {
+        return;
+    }
+
+    std::va_list v{};
+    va_start(v, s);
+    log_write_feature_arg_internal(s, &v);
+    va_end(v);
 }
 
 } // extern "C"

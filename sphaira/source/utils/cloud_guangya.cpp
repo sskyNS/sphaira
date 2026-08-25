@@ -71,7 +71,7 @@ struct GuangyaDevice final : cloud::CloudDiskDevice {
         const std::string msg = cloud::js_str(j.get(), "msg", "");
         auto data = cloud::js_get(j.get(), "data");
         if (!data && !msg.empty()) {
-            log_write("[GUANGYA] get_file_list failed: %s\n", msg.c_str());
+            log_write_feature("[GUANGYA] get_file_list failed: %s\n", msg.c_str());
             return -EIO;
         }
 
@@ -221,7 +221,7 @@ private:
         curl_slist_free_all(h);
 
         if (m_last_http_code == 401) {
-            log_write("[GUANGYA] %s 返回 401，尝试刷新 token\n", path.c_str());
+            log_write_feature("[GUANGYA] %s 返回 401，尝试刷新 token\n", path.c_str());
             m_access_token.clear();
             if (auth()) {
                 h = base_headers(true);

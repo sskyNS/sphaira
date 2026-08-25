@@ -69,7 +69,7 @@ void Menu::Scan() {
     while (true) {
         s32 count{};
         if (R_FAILED(nsListApplicationRecord(records.data(), records.size(), offset, &count))) {
-            log_write("[game_version] failed to list application records at offset %d\n", offset);
+            log_write_feature("[game_version] failed to list application records at offset %d\n", offset);
         }
 
         if (!count) {
@@ -91,7 +91,7 @@ void Menu::Scan() {
         offset += count;
     }
 
-    log_write("[game_version] found %zu titles\n", m_entries.size());
+    log_write_feature("[game_version] found %zu titles\n", m_entries.size());
 }
 
 void Menu::Update(Controller* controller, TouchInfo* touch) {

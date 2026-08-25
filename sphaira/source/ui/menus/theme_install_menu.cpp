@@ -91,7 +91,7 @@ void Menu::Scan() {
 
     walk(walk, THEMES_DIR);
 
-    log_write("[theme_install] found %zu nxtheme files\n", m_entries.size());
+    log_write_feature("[theme_install] found %zu nxtheme files\n", m_entries.size());
 }
 
 void Menu::Install() {
