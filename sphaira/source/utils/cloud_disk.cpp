@@ -288,11 +288,6 @@ ssize_t CloudDiskDevice::devoptab_read(void* fd, char* ptr, size_t len) {
 
     const auto ret = f->pdata->PullData(ptr, len);
 
-    // 消费端拉取数据后立即唤醒 curl。curl 在缓冲满时会通过写回调返回
-    // CURL_WRITEFUNC_PAUSE 暂停，若不在此恢复，大文件下载会因无人 resume
-    // 而永久卡住（表现为速度归零）。
-    curl_easy_pause(f->pdata->curl, CURLPAUSE_CONT);
-
     f->off += ret;
     f->last_off = f->off;
 

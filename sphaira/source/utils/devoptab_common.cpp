@@ -1058,15 +1058,17 @@ size_t PushPullThreadData::PushData(const char* data, size_t total_size, bool cu
     ON_SCOPE_EXIT(condvarWakeOne(&can_pull));
 
     if (curl) {
-        // this should be handled in the progress function.
-        // however i handle it here as well just in case.
-        if (buffer.size() + total_size > MAX_BUFFER_SIZE) {
-            return CURL_WRITEFUNC_PAUSE;
+        // 缓冲满时在此阻塞等待消费端排空（消费端排空后会唤醒 can_push），
+        // 而不是返回 CURL_WRITEFUNC_PAUSE —— 一旦 pause，libcurl 不再回调任何
+        // 回调，且消费端排空后无人 resume，会导致大文件下载永久卡死（速度归零）。
+        while (buffer.size() + total_size > MAX_BUFFER_SIZE && !error && !finished) {
+            condvarWakeOne(&can_pull);
+            condvarWait(&can_push, &mutex);
+        }
+        if (error || finished) {
+            return 0;
         }
 
-        // blocking / pausing is handled in the progress function.
-        // do NOT block here as curl does not like it and it will deadlock.
-        // the mutex block above is fine as it only blocks to perform a memcpy.
         buffer.insert(buffer.end(), data, data + total_size);
         return total_size;
     } else {
@@ -1109,7 +1111,7 @@ size_t PullThreadData::pull_thread_callback(char *ptr, size_t size, size_t nmemb
 
 size_t PushPullThreadData::progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
     auto *data = static_cast<PushPullThreadData*>(clientp);
-    bool should_pause;
+    bool should_pause = false;
 
     {
         SCOPED_MUTEX(&data->mutex);
@@ -1136,13 +1138,13 @@ size_t PushPullThreadData::progress_callback(void *clientp, curl_off_t dltotal, 
                 return 1;
             }
 
-            // pause if the buffer is full, otherwise continue.
-            should_pause = data->buffer.size() >= MAX_BUFFER_SIZE;
-        } else {
-            // pause if we have no data to send, otherwise continue.
-            // do not pause if finished as curl may have internal data pending to send.
-            should_pause = !data->finished && data->buffer.empty();
+            // 下载：背压由写回调内的阻塞实现，此处不再 pause/resume，
+            // 避免 pause 后无人 resume 导致的大文件下载卡死。
+            return 0;
         }
+
+        // 上传：仍由 progress_callback 做暂停/恢复（读回调返回 CURL_READFUNC_PAUSE）。
+        should_pause = !data->finished && data->buffer.empty();
     }
 
     // curl_easy_pause(CONT) actually calls the read/write callback again immediately.

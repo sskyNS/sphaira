@@ -19,12 +19,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <set>
 #include <span>
 #include <string_view>
+#include <thread>
 
 namespace sphaira::ui::menu::film_warehouse {
 
@@ -518,7 +521,8 @@ bool LlmChat(const AiConfig& cfg, const std::string& system, const std::string& 
 //   - 海报图：https://tmdb-proxy.mediaryscout.app/img/t/p/w342/<poster_path>
 // 该代理在服务端注入作者的 TMDB key，并解决了 image.tmdb.org 在大陆被墙的问题。
 bool TmdbSearch(const std::string& title, const std::string& year,
-                const std::string& kind, std::string& out_poster_url, std::string& out_year) {
+                const std::string& kind, std::string& out_poster_url, std::string& out_year,
+                std::string* out_overview = nullptr) {
     std::string url = "https://tmdb-proxy.mediaryscout.app/search/";
     url += (kind == "tv") ? "tv" : "movie";
     url += "?query=" + curl::EscapeString(title);
@@ -620,6 +624,446 @@ std::string JsonStr(const std::string& s) {
 
 } // namespace
 
+// ========================================================================
+// 入库（转存到网盘）辅助
+// ========================================================================
+namespace {
+
+constexpr const char* ACQUIRE_PATH = "/switch/sphaira/acquired.json";
+
+std::string GetNowStr() {
+    const auto t = std::time(nullptr);
+    const auto tm = std::localtime(&t);
+    char buf[64]{};
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
+        tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min);
+    return buf;
+}
+
+std::string ExtractBdstoken(const std::string& cookie) {
+    std::string upper = cookie;
+    for (auto& c : upper) {
+        c = (char)std::toupper((unsigned char)c);
+    }
+    const size_t pos = upper.find("BDSTOKEN=");
+    if (pos == std::string::npos) {
+        return {};
+    }
+    const size_t start = pos + 9;
+    const size_t end = cookie.find(';', start);
+    return cookie.substr(start, end == std::string::npos ? std::string::npos : end - start);
+}
+
+// 光鸭离线下载（转存磁力 / ed2k / http）。返回是否成功提交任务。
+bool GuangyaOfflineDownload(const std::string& url) {
+    char buf[512]{};
+    ini_gets("GUANGYA", "access_token", "", buf, sizeof(buf), "/config/sphaira/mount/guangya.ini");
+    const std::string token = buf;
+    if (token.empty()) {
+        return false;
+    }
+
+    const std::string body = "{\"url\":\"" + url + "\",\"parentId\":\"\",\"newName\":\"\"}";
+
+    std::string resp;
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return false;
+    }
+    curl_slist* h = nullptr;
+    h = curl_slist_append(h, "Content-Type: application/json");
+    h = curl_slist_append(h, ("Authorization: Bearer " + token).c_str());
+    h = curl_slist_append(h, "Dt: 4");
+    h = curl_slist_append(h, "origin: https://www.guangyapan.com");
+    h = curl_slist_append(h, "referer: https://www.guangyapan.com/");
+    curl_easy_setopt(curl, CURLOPT_URL, "https://api.guangyapan.com/cloudcollection/v1/create_task");
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SearchWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+
+    yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+    if (!doc) {
+        return false;
+    }
+    ON_SCOPE_EXIT(yyjson_doc_free(doc));
+    const auto root = yyjson_doc_get_root(doc);
+    const auto msg = root ? yyjson_obj_get(root, "msg") : nullptr;
+    return !msg || !yyjson_is_str(msg) || std::string{yyjson_get_str(msg)} == "success";
+}
+
+// 百度离线下载（转存）。返回 errno==0 表示提交成功。
+bool BaiduOfflineDownload(const std::string& url) {
+    char buf[512]{};
+    ini_gets("BAIDU", "bdstoken", "", buf, sizeof(buf), "/config/sphaira/mount/baidu.ini");
+    std::string bdstoken = buf;
+    if (bdstoken.empty()) {
+        ini_gets("BAIDU", "cookie", "", buf, sizeof(buf), "/config/sphaira/mount/baidu.ini");
+        bdstoken = ExtractBdstoken(buf);
+    }
+    if (bdstoken.empty()) {
+        return false;
+    }
+
+    const std::string body = "method=add_task&app_id=250528&source_url=" + curl::EscapeString(url) +
+        "&save_path=" + curl::EscapeString("/") + "&bdstoken=" + curl::EscapeString(bdstoken);
+
+    std::string resp;
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return false;
+    }
+    curl_slist* h = curl_slist_append(nullptr, "Content-Type: application/x-www-form-urlencoded");
+    curl_easy_setopt(curl, CURLOPT_URL, "https://pan.baidu.com/rest/2.0/services/cloud_dl");
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SearchWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+
+    yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+    if (!doc) {
+        return false;
+    }
+    ON_SCOPE_EXIT(yyjson_doc_free(doc));
+    const auto root = yyjson_doc_get_root(doc);
+    const auto errno_val = root ? yyjson_obj_get(root, "errno") : nullptr;
+    return errno_val && yyjson_is_int(errno_val) && yyjson_get_int(errno_val) == 0;
+}
+
+struct OfflineDrive {
+    std::string label;
+    std::string section;
+};
+
+std::vector<OfflineDrive> ListOfflineDrives() {
+    std::vector<OfflineDrive> out;
+    char buf[512]{};
+
+    ini_gets("GUANGYA", "access_token", "", buf, sizeof(buf), "/config/sphaira/mount/guangya.ini");
+    if (buf[0]) {
+        out.push_back({"光鸭网盘", "GUANGYA"});
+    }
+
+    ini_gets("BAIDU", "bdstoken", "", buf, sizeof(buf), "/config/sphaira/mount/baidu.ini");
+    if (!buf[0]) {
+        ini_gets("BAIDU", "cookie", "", buf, sizeof(buf), "/config/sphaira/mount/baidu.ini");
+    }
+    if (buf[0]) {
+        out.push_back({"百度网盘", "BAIDU"});
+    }
+
+    return out;
+}
+
+bool SubmitOfflineDownload(const std::string& section, const std::string& url) {
+    if (section == "GUANGYA") {
+        return GuangyaOfflineDownload(url);
+    }
+    if (section == "BAIDU") {
+        return BaiduOfflineDownload(url);
+    }
+    return false;
+}
+
+// ---- 夸克网盘转存分享链接（4 步：token → detail → save → poll） ----
+// 夸克没有磁力/离线下载的 web API，只能转存「分享链接」。
+constexpr const char* QUARK_SHARE_BASE = "https://drive-pc.quark.cn";
+constexpr const char* QUARK_SHARE_QUERY = "pr=ucpro&fr=pc&uc_param_str=";
+constexpr const char* QUARK_SHARE_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    " (KHTML, like Gecko) quark-cloud-drive/2.5.20 Chrome/100.0.4896.160"
+    " Electron/18.3.5.4-b478491100 Safari/537.36 Channel/pckk_other_ch";
+
+std::string QuarkReadCookie() {
+    char buf[4096]{};
+    ini_gets("QUARK", "cookie", "", buf, sizeof(buf), "/config/sphaira/mount/quark.ini");
+    return buf;
+}
+
+curl_slist* QuarkHeaders(const std::string& cookie) {
+    curl_slist* h = nullptr;
+    h = curl_slist_append(h, ("Cookie: " + cookie).c_str());
+    h = curl_slist_append(h, ("User-Agent: " + std::string(QUARK_SHARE_UA)).c_str());
+    h = curl_slist_append(h, "Referer: https://pan.quark.cn/");
+    h = curl_slist_append(h, "Origin: https://pan.quark.cn");
+    h = curl_slist_append(h, "Content-Type: application/json");
+    h = curl_slist_append(h, "Accept: application/json, text/plain, */*");
+    return h;
+}
+
+// 通用夸克请求（GET 时 body 传空串）。
+std::string QuarkRequest(const std::string& url, const std::string& method, const std::string& body, const std::string& cookie) {
+    std::string resp;
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return {};
+    }
+    curl_slist* h = QuarkHeaders(cookie);
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, SearchWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    if (method == "POST") {
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    }
+    curl_easy_perform(curl);
+    curl_slist_free_all(h);
+    curl_easy_cleanup(curl);
+    return resp;
+}
+
+// 从分享链接提取 pwd_id 与 passcode。
+bool ParseQuarkShareUrl(const std::string& url, const std::string& password, std::string& pwd_id, std::string& passcode) {
+    const auto s_pos = url.find("/s/");
+    if (s_pos == std::string::npos) {
+        return false;
+    }
+    const size_t id_start = s_pos + 3;
+    const size_t id_end = url.find_first_of("?#", id_start);
+    pwd_id = url.substr(id_start, id_end == std::string::npos ? std::string::npos : id_end - id_start);
+    if (pwd_id.empty()) {
+        return false;
+    }
+
+    passcode = password;
+    const auto extract = [&url](const char* key) -> std::string {
+        const std::string m1 = std::string("?") + key + "=";
+        const std::string m2 = std::string("&") + key + "=";
+        size_t p = url.find(m1);
+        if (p == std::string::npos) {
+            p = url.find(m2);
+        }
+        if (p == std::string::npos) {
+            return {};
+        }
+        p += (url.find(m1) != std::string::npos ? m1.length() : m2.length());
+        const size_t e = url.find_first_of("&#", p);
+        return url.substr(p, e == std::string::npos ? std::string::npos : e - p);
+    };
+    if (passcode.empty()) {
+        passcode = extract("passcode");
+    }
+    if (passcode.empty()) {
+        passcode = extract("pwd");
+    }
+    return true;
+}
+
+// 夸克转存：把分享链接里的文件保存到「我的网盘根目录」。返回是否成功。
+bool QuarkSaveShare(const std::string& url, const std::string& password) {
+    const std::string cookie = QuarkReadCookie();
+    if (cookie.empty()) {
+        return false;
+    }
+
+    std::string pwd_id, passcode;
+    if (!ParseQuarkShareUrl(url, password, pwd_id, passcode)) {
+        return false;
+    }
+
+    // 1. 获取 stoken
+    std::string body = "{\"pwd_id\":" + JsonStr(pwd_id) + ",\"passcode\":" + JsonStr(passcode) + "}";
+    std::string resp = QuarkRequest(std::string(QUARK_SHARE_BASE) + "/1/clouddrive/share/sharepage/token?" + QUARK_SHARE_QUERY,
+        "POST", body, cookie);
+
+    std::string stoken;
+    {
+        yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+        if (!doc) {
+            return false;
+        }
+        ON_SCOPE_EXIT(yyjson_doc_free(doc));
+        const auto root = yyjson_doc_get_root(doc);
+        const auto data = root ? yyjson_obj_get(root, "data") : nullptr;
+        const auto v = data ? yyjson_obj_get(data, "stoken") : nullptr;
+        stoken = v && yyjson_is_str(v) ? yyjson_get_str(v) : "";
+    }
+    if (stoken.empty()) {
+        return false;
+    }
+
+    // 2. 获取分享详情（fid + share_fid_token）
+    const std::string detail_url = std::string(QUARK_SHARE_BASE) + "/1/clouddrive/share/sharepage/detail?" + QUARK_SHARE_QUERY +
+        "&pwd_id=" + curl::EscapeString(pwd_id) + "&stoken=" + curl::EscapeString(stoken) +
+        "&pdir_fid=0&force=0&_page=1&_size=50&_fetch_banner=0&_fetch_share=0&_fetch_total=1"
+        "&_sort=file_type:asc,updated_at:desc";
+    resp = QuarkRequest(detail_url, "GET", "", cookie);
+
+    std::vector<std::string> fid_list;
+    std::vector<std::string> fid_token_list;
+    {
+        yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+        if (!doc) {
+            return false;
+        }
+        ON_SCOPE_EXIT(yyjson_doc_free(doc));
+        const auto root = yyjson_doc_get_root(doc);
+        const auto data = root ? yyjson_obj_get(root, "data") : nullptr;
+        const auto list = data ? yyjson_obj_get(data, "list") : nullptr;
+        if (list && yyjson_is_arr(list)) {
+            size_t idx{}, max{};
+            yyjson_val* item{};
+            yyjson_arr_foreach(list, idx, max, item) {
+                const auto fid = GetStr(item, "fid");
+                const auto token = GetStr(item, "share_fid_token");
+                if (!fid.empty() && !token.empty()) {
+                    fid_list.emplace_back(fid);
+                    fid_token_list.emplace_back(token);
+                }
+            }
+        }
+    }
+    if (fid_list.empty()) {
+        return false;
+    }
+
+    // 3. 保存到根目录
+    std::string fid_arr = "[", token_arr = "[";
+    for (size_t i = 0; i < fid_list.size(); i++) {
+        if (i) {
+            fid_arr += ',';
+            token_arr += ',';
+        }
+        fid_arr += JsonStr(fid_list[i]);
+        token_arr += JsonStr(fid_token_list[i]);
+    }
+    fid_arr += ']';
+    token_arr += ']';
+
+    body = "{\"fid_list\":" + fid_arr + ",\"fid_token_list\":" + token_arr +
+        ",\"to_pdir_fid\":\"0\",\"pwd_id\":" + JsonStr(pwd_id) + ",\"stoken\":" + JsonStr(stoken) +
+        ",\"pdir_fid\":\"0\",\"scene\":\"link\"}";
+    resp = QuarkRequest(std::string(QUARK_SHARE_BASE) + "/1/clouddrive/share/sharepage/save?" + QUARK_SHARE_QUERY,
+        "POST", body, cookie);
+
+    std::string task_id;
+    {
+        yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+        if (!doc) {
+            return false;
+        }
+        ON_SCOPE_EXIT(yyjson_doc_free(doc));
+        const auto root = yyjson_doc_get_root(doc);
+        const auto data = root ? yyjson_obj_get(root, "data") : nullptr;
+        const auto v = data ? yyjson_obj_get(data, "task_id") : nullptr;
+        task_id = v && yyjson_is_str(v) ? yyjson_get_str(v) : "";
+    }
+    if (task_id.empty()) {
+        return false;
+    }
+
+    // 4. 轮询任务直到完成
+    for (int i = 0; i < 12; i++) {
+        const std::string task_url = std::string(QUARK_SHARE_BASE) + "/1/clouddrive/task?" + QUARK_SHARE_QUERY +
+            "&task_id=" + curl::EscapeString(task_id) + "&retry_index=" + std::to_string(i);
+        resp = QuarkRequest(task_url, "GET", "", cookie);
+
+        yyjson_doc* doc = yyjson_read(resp.c_str(), resp.size(), 0);
+        if (!doc) {
+            return false;
+        }
+        ON_SCOPE_EXIT(yyjson_doc_free(doc));
+        const auto root = yyjson_doc_get_root(doc);
+        const auto data = root ? yyjson_obj_get(root, "data") : nullptr;
+        const auto status = data ? yyjson_obj_get(data, "status") : nullptr;
+        if (status && yyjson_is_int(status) && yyjson_get_int(status) == 2) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    }
+    return false;
+}
+
+struct AcquireEntry {
+    std::string title;
+    std::string drive;
+    std::string time;
+};
+
+std::vector<AcquireEntry> LoadAcquireLog() {
+    std::vector<AcquireEntry> out;
+
+    std::vector<u8> data;
+    if (R_FAILED(fs::FsNativeSd().read_entire_file(ACQUIRE_PATH, data))) {
+        return out;
+    }
+
+    const std::string json(data.begin(), data.end());
+    yyjson_doc* doc = yyjson_read(json.c_str(), json.size(), 0);
+    if (!doc) {
+        return out;
+    }
+    ON_SCOPE_EXIT(yyjson_doc_free(doc));
+
+    const auto root = yyjson_doc_get_root(doc);
+    const auto arr = root ? yyjson_obj_get(root, "entries") : nullptr;
+    if (!arr || !yyjson_is_arr(arr)) {
+        return out;
+    }
+
+    size_t idx{}, max{};
+    yyjson_val* item{};
+    yyjson_arr_foreach(arr, idx, max, item) {
+        AcquireEntry e;
+        e.title = GetStr(item, "title");
+        e.drive = GetStr(item, "drive");
+        e.time = GetStr(item, "time");
+        if (!e.title.empty()) {
+            out.emplace_back(std::move(e));
+        }
+    }
+    return out;
+}
+
+void RecordAcquire(const std::string& title, const std::string& drive) {
+    auto entries = LoadAcquireLog();
+
+    AcquireEntry e;
+    e.title = title;
+    e.drive = drive;
+    e.time = GetNowStr();
+    entries.emplace_back(std::move(e));
+
+    std::string json = "{\"entries\":[";
+    for (size_t i = 0; i < entries.size(); i++) {
+        if (i) {
+            json += ',';
+        }
+        json += "{\"title\":" + JsonStr(entries[i].title);
+        json += ",\"drive\":" + JsonStr(entries[i].drive);
+        json += ",\"time\":" + JsonStr(entries[i].time);
+        json += '}';
+    }
+    json += "]}";
+
+    fs::FsNativeSd fs;
+    fs.CreateDirectoryRecursively("/switch/sphaira");
+    fs.write_entire_file(ACQUIRE_PATH, std::span<const u8>{(const u8*)json.data(), json.size()});
+}
+
+} // namespace
+
 Menu::Menu(u32 flags) : grid::Menu{"影视仓", flags} {
     this->SetActions(
         std::make_pair(Button::B, Action{"返回", [this](){ SetPop(); }}),
@@ -628,7 +1072,8 @@ Menu::Menu(u32 flags) : grid::Menu{"影视仓", flags} {
         std::make_pair(Button::Y, Action{"清空媒体库", [this](){ ClearLibrary(); }}),
         std::make_pair(Button::L2, Action{"打开目录", [this](){ OpenEntry(); }}),
         std::make_pair(Button::R2, Action{"搜索", [this](){ Search(); }}),
-        std::make_pair(Button::R3, Action{"AI 设置", [this](){ AiConfig(); }})
+        std::make_pair(Button::R3, Action{"AI 设置", [this](){ AiConfig(); }}),
+        std::make_pair(Button::L3, Action{"入库记录", [this](){ ShowAcquireLog(); }})
     );
 
     LoadLibrary();
@@ -888,11 +1333,56 @@ void Menu::Search() {
                     return;
                 }
                 const auto& r = (*results)[*index];
-                std::string msg = "链接: " + r.url;
-                if (!r.password.empty()) {
-                    msg += "  密码: " + r.password;
+
+                // 夸克只支持「转存分享链接」，磁力/ed2k 则走光鸭/百度的离线下载。
+                const bool is_quark = r.url.find("pan.quark.cn/s/") != std::string::npos || r.type == "quark";
+                const auto drives = ListOfflineDrives();
+
+                PopupList::Items actions;
+                if (is_quark) {
+                    actions.emplace_back("转存到夸克网盘");
                 }
-                App::Notify(msg);
+                for (const auto& d : drives) {
+                    actions.emplace_back("入库到" + d.label);
+                }
+                actions.emplace_back("复制链接");
+
+                App::Push<PopupList>(r.title, actions, [r, drives, is_quark](std::optional<s64> ai) {
+                    if (!ai.has_value()) {
+                        return;
+                    }
+                    s64 v = *ai;
+
+                    if (is_quark) {
+                        if (v == 0) {
+                            if (QuarkSaveShare(r.url, r.password)) {
+                                RecordAcquire(r.title, "夸克网盘");
+                                App::Notify("已转存到夸克网盘，请到网盘查看");
+                            } else {
+                                App::Notify("转存失败，请检查夸克登录凭证或分享链接");
+                            }
+                            return;
+                        }
+                        --v;
+                    }
+
+                    if (v < (s64)drives.size()) {
+                        const auto& d = drives[v];
+                        if (SubmitOfflineDownload(d.section, r.url)) {
+                            RecordAcquire(r.title, d.label);
+                            App::Notify("已提交离线下载到" + d.label + "，请到网盘查看");
+                        } else {
+                            App::Notify("入库失败，请检查" + d.label + "登录凭证");
+                        }
+                        return;
+                    }
+
+                    std::string msg = "链接: " + r.url;
+                    if (!r.password.empty()) {
+                        msg += "  密码: " + r.password;
+                    }
+                    App::Notify(msg);
+                });
             });
         }
     );
@@ -951,6 +1441,22 @@ void Menu::TestAiConnection() {
         [result](Result rc) {
             App::Notify(*result);
         });
+}
+
+void Menu::ShowAcquireLog() {
+    const auto entries = LoadAcquireLog();
+    if (entries.empty()) {
+        App::Notify("暂无入库记录");
+        return;
+    }
+
+    PopupList::Items items;
+    items.reserve(entries.size());
+    for (const auto& e : entries) {
+        items.emplace_back(e.title + "  [" + e.drive + "]  " + e.time);
+    }
+
+    App::Push<PopupList>("入库记录", items, [](std::optional<s64>) {});
 }
 
 std::vector<MediaEntry> Menu::DoScan(sphaira::ui::ProgressBox* pbox) {
